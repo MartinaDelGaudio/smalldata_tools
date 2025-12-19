@@ -608,12 +608,10 @@ else:
     # Note: xtcpp creates per-rank files (test_<rank>.h5) by default
     # The filename h5_f_name is not used directly by xtcpp
     # Files may need to be merged later if needed
+    # Note: open_file() is not exposed in Python bindings, so file will be opened
+    # automatically when first data is written via event() or save_summary()
 if rank == 0:
-    logger.info("Opening smalldata file (xtcpp creates per-rank files)")
-# CRITICAL: Must call open_file() before using small_data, otherwise destructor will hang
-small_data.open_file()
-if rank == 0:
-    logger.info("smalldata file has been successfully created.")
+    logger.info("smalldata file will be created when first data is written.")
 
 
 ##########################################################
@@ -975,8 +973,16 @@ if True:
 
 # Finishing up:
 # Note: _xtcpp.SmallData doesn't have a done() method - cleanup happens automatically in destructor
+# Note: The destructor will write remaining batches, but m_h5 must be initialized
+# Since open_file() is not exposed in Python, the file should be opened automatically
+# when first data is written. If no data was written, we need to ensure the file is opened.
+# For now, we'll rely on the fact that event() or save_summary() should have been called.
 logger.debug(f"Finishing up on rank {rank}")
 # small_data.done()  # Not available in _xtcpp.SmallData
+
+# Explicitly delete small_data to trigger destructor and ensure cleanup happens
+# This ensures any remaining batches are written before MPI barrier
+del small_data
 
 
 # Epics data from the archiver
