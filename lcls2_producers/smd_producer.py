@@ -608,10 +608,10 @@ else:
     # Note: xtcpp creates per-rank files (test_<rank>.h5) by default
     # The filename h5_f_name is not used directly by xtcpp
     # Files may need to be merged later if needed
-    # Note: open_file() is not exposed in Python bindings, so file will be opened
-    # automatically when first data is written via event() or save_summary()
+    # CRITICAL: Must call open_file() before using small_data, otherwise destructor will hang
+    small_data.open_file()
 if rank == 0:
-    logger.info("smalldata file will be created when first data is written.")
+    logger.info("smalldata file has been opened (per-rank files: test_<rank>.h5)")
 
 
 ##########################################################
