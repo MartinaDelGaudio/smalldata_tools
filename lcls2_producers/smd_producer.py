@@ -851,12 +851,18 @@ for evt_num, evt in enumerate(event_iter):
         return flat_dict
     
     def convert_for_xtcpp(data):
-        """Convert data to formats compatible with xtcpp (masked arrays, etc.)"""
+        """Convert data to formats compatible with xtcpp (masked arrays, etc.)
+        For save_summary, numpy arrays need to be converted to lists since
+        pybind11 can't automatically convert numpy arrays to std::any.
+        """
         if isinstance(data, np.ma.MaskedArray):
-            # Convert masked array to regular numpy array
-            return np.asarray(data)
+            # Convert masked array to regular numpy array, then to list
+            arr = np.asarray(data)
+            return arr.flatten().tolist()
         elif isinstance(data, np.ndarray):
-            return data
+            # Convert numpy array to list for save_summary compatibility
+            # xtcpp expects vectors (lists) that can be converted to std::any
+            return data.flatten().tolist()
         elif isinstance(data, dict):
             return {k: convert_for_xtcpp(v) for k, v in data.items()}
         elif isinstance(data, (list, tuple)):
@@ -916,11 +922,13 @@ if True:
                 print("Problem with data sum for %s and key %s: %s" % (det._name, key, str(e)))
     # For xtcpp, save_summary needs flattened dict and shape dict
     if len(sumDict["Sums"].keys()) > 0:
-        # Convert complex types for xtcpp compatibility
-        sumDict_converted = convert_for_xtcpp(sumDict)
-        sumDict_flat = flatten_dict(sumDict_converted)
-        sumDict_shape = create_shape_dict(sumDict_converted)
-        small_data.save_summary(sumDict_flat, sumDict_shape)
+        # Create shape dict BEFORE converting arrays to lists (need original shapes)
+        sumDict_shape = create_shape_dict(sumDict)
+        # Flatten dict structure
+        sumDict_flat = flatten_dict(sumDict)
+        # Convert numpy arrays to lists for xtcpp compatibility
+        sumDict_flat_converted = {k: convert_for_xtcpp(v) for k, v in sumDict_flat.items()}
+        small_data.save_summary(sumDict_flat_converted, sumDict_shape)
 
     if rank == 0:
         logger.info("Saving detector configuration to UserDataCfg")
@@ -951,11 +959,13 @@ if True:
         else:
             Config = {"UserDataCfg": userDataCfg}
         # For xtcpp, save_summary needs flattened dict and shape dict
-        # Convert complex types (masked arrays, etc.) to numpy arrays first
-        Config_converted = convert_for_xtcpp(Config)
-        Config_flat = flatten_dict(Config_converted)
-        Config_shape = create_shape_dict(Config_converted)
-        small_data.save_summary(Config_flat, Config_shape)  # this only works w/ 1 rank!
+        # Create shape dict BEFORE converting arrays to lists (need original shapes)
+        Config_shape = create_shape_dict(Config)
+        # Flatten dict structure
+        Config_flat = flatten_dict(Config)
+        # Convert numpy arrays to lists for xtcpp compatibility
+        Config_flat_converted = {k: convert_for_xtcpp(v) for k, v in Config_flat.items()}
+        small_data.save_summary(Config_flat_converted, Config_shape)  # this only works w/ 1 rank!
 
 # Finishing up:
 # Note: _xtcpp.SmallData doesn't have a done() method - cleanup happens automatically in destructor
