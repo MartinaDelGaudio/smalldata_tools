@@ -768,7 +768,28 @@ for evt_num, evt in enumerate(event_iter):
                         userDictInt[det._name][k] = v
                         normdict[det._name][k] = v * 0  # may not work for arrays....
                 # print(userDictInt)
-                small_data.event(evt, userDictInt, align_group="intg")
+                # For xtcpp, need to create shape dict from data
+                userDictInt_shape = {}
+                for key, value in userDictInt.items():
+                    if isinstance(value, dict):
+                        for subkey, subvalue in value.items():
+                            if isinstance(subvalue, np.ndarray):
+                                userDictInt_shape[f"{key}/{subkey}"] = list(subvalue.shape)
+                            else:
+                                userDictInt_shape[f"{key}/{subkey}"] = []
+                    elif isinstance(value, np.ndarray):
+                        userDictInt_shape[key] = list(value.shape)
+                    else:
+                        userDictInt_shape[key] = []
+                # Flatten nested dict structure for xtcpp
+                userDictInt_flat = {}
+                for key, value in userDictInt.items():
+                    if isinstance(value, dict):
+                        for subkey, subvalue in value.items():
+                            userDictInt_flat[f"{key}/{subkey}"] = subvalue
+                    else:
+                        userDictInt_flat[key] = value
+                small_data.event(userDictInt_flat, userDictInt_shape)
 
     # store event-based data
     # if det_data is not None:
@@ -789,13 +810,55 @@ for evt_num, evt in enumerate(event_iter):
     # #save what was selected to be saved.
     # #print('SAVE ',det_data)
 
+    # For xtcpp, need to create shape dict from data and flatten nested structures
+    def create_shape_dict(data_dict):
+        """Create shape dictionary from data dictionary for xtcpp"""
+        shape_dict = {}
+        for key, value in data_dict.items():
+            if isinstance(value, dict):
+                for subkey, subvalue in value.items():
+                    if isinstance(subvalue, np.ndarray):
+                        shape_dict[f"{key}/{subkey}"] = list(subvalue.shape)
+                    elif isinstance(subvalue, (list, tuple)) and len(subvalue) > 0:
+                        if isinstance(subvalue[0], np.ndarray):
+                            shape_dict[f"{key}/{subkey}"] = list(subvalue[0].shape)
+                        else:
+                            shape_dict[f"{key}/{subkey}"] = [len(subvalue)]
+                    else:
+                        shape_dict[f"{key}/{subkey}"] = []
+            elif isinstance(value, np.ndarray):
+                shape_dict[key] = list(value.shape)
+            elif isinstance(value, (list, tuple)) and len(value) > 0:
+                if isinstance(value[0], np.ndarray):
+                    shape_dict[key] = list(value[0].shape)
+                else:
+                    shape_dict[key] = [len(value)]
+            else:
+                shape_dict[key] = []
+        return shape_dict
+    
+    def flatten_dict(data_dict):
+        """Flatten nested dictionary structure for xtcpp"""
+        flat_dict = {}
+        for key, value in data_dict.items():
+            if isinstance(value, dict):
+                for subkey, subvalue in value.items():
+                    flat_dict[f"{key}/{subkey}"] = subvalue
+            else:
+                flat_dict[key] = value
+        return flat_dict
+    
     if len(int_dets) == 0 or args.all_events:
-        small_data.event(evt, det_data)
+        det_data_flat = flatten_dict(det_data)
+        det_data_shape = create_shape_dict(det_data)
+        small_data.event(det_data_flat, det_data_shape)
     else:
         scan_data = det_data.get("scan", {})
         timing_data = det_data.get("timing", {})
         data_for_smd = {"scan": scan_data, "timing": timing_data}
-        small_data.event(evt, data_for_smd)
+        data_for_smd_flat = flatten_dict(data_for_smd)
+        data_for_smd_shape = create_shape_dict(data_for_smd)
+        small_data.event(data_for_smd_flat, data_for_smd_shape)
 
     # the ARP will pass run & exp via the environment, if I see that info, the post updates
     if (
