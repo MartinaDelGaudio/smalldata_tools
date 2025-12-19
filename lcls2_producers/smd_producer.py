@@ -629,36 +629,36 @@ EODetTS = None
 
 default_det_aliases = []
 
-    dets = []
-    int_dets = []
-    if not args.default:
-        dets = define_dets(int(args.run), config.detectors)
-        if not skip_intg:
-            int_dets = define_dets(int(args.run), integrating_detectors)
+dets = []
+int_dets = []
+if not args.default:
+    dets = define_dets(int(args.run), config.detectors)
+    if not skip_intg:
+        int_dets = define_dets(int(args.run), integrating_detectors)
+if rank == 0:
+    logger.info(f"Detectors: {[det._name for det in dets]}")
+    logger.info(f"Integrating detectors: {[det._name for det in int_dets]}")
+logger.debug(f"Rank {rank} detectors: {[det._name for det in dets]}")
+logger.debug(
+    f"Rank {rank} integrating detectors: {[det._name for det in int_dets]}"
+)
+
+det_presence = {}
+if args.full:
+    # For xtcpp, we can't easily get all detector names without iterating
+    # For now, skip the full detector discovery
     if rank == 0:
-        logger.info(f"Detectors: {[det._name for det in dets]}")
-        logger.info(f"Integrating detectors: {[det._name for det in int_dets]}")
-    logger.debug(f"Rank {rank} detectors: {[det._name for det in dets]}")
-    logger.debug(
-        f"Rank {rank} integrating detectors: {[det._name for det in int_dets]}"
-    )
+        logger.warning("--full option not fully supported with xtcpp yet")
 
-    det_presence = {}
-    if args.full:
-        # For xtcpp, we can't easily get all detector names without iterating
-        # For now, skip the full detector discovery
-        if rank == 0:
-            logger.warning("--full option not fully supported with xtcpp yet")
+evt_num = (
+    -1
+)  # set this to default until I have a useable rank for printing updates...
+if rank == 0:
+    logger.info("And now the event loop user....")
 
-    evt_num = (
-        -1
-    )  # set this to default until I have a useable rank for printing updates...
-    if rank == 0:
-        logger.info("And now the event loop user....")
-
-    normdict = {}
-    for det in int_dets:
-        normdict[det._name] = {"count": 0, "timestamp_min": 0, "timestamp_max": 0}
+normdict = {}
+for det in int_dets:
+    normdict[det._name] = {"count": 0, "timestamp_min": 0, "timestamp_max": 0}
 
 # For xtcpp, iterate directly over the datasource
 event_iter = ds
