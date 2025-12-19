@@ -931,14 +931,30 @@ if True:
             except Exception as e:
                 print("Problem with data sum for %s and key %s: %s" % (det._name, key, str(e)))
     # For xtcpp, save_summary needs flattened dict and shape dict
+    # Note: save_summary may not work if pyxtcpp doesn't have proper wrapper
+    # Wrap in try-except to allow code to continue if it fails
     if len(sumDict["Sums"].keys()) > 0:
-        # Create shape dict BEFORE converting arrays to lists (need original shapes)
-        sumDict_shape = create_shape_dict(sumDict)
-        # Flatten dict structure
-        sumDict_flat = flatten_dict(sumDict)
-        # Convert numpy arrays to lists for xtcpp compatibility
-        sumDict_flat_converted = {k: convert_for_xtcpp(v) for k, v in sumDict_flat.items()}
-        small_data.save_summary(sumDict_flat_converted, sumDict_shape)
+        try:
+            # Create shape dict BEFORE converting arrays to lists (need original shapes)
+            sumDict_shape = create_shape_dict(sumDict)
+            # Flatten dict structure
+            sumDict_flat = flatten_dict(sumDict)
+            # Convert numpy arrays to numpy arrays (event() wrapper expects numpy arrays)
+            # Try passing numpy arrays like event() does, not lists
+            sumDict_for_xtcpp = {}
+            for k, v in sumDict_flat.items():
+                if isinstance(v, (list, tuple)):
+                    # Convert list back to numpy array for xtcpp compatibility
+                    sumDict_for_xtcpp[k] = np.array(v, dtype=np.float32)
+                elif isinstance(v, np.ndarray):
+                    sumDict_for_xtcpp[k] = v.astype(np.float32) if v.dtype != np.float32 else v
+                else:
+                    # Scalar or other type - convert to numpy array
+                    sumDict_for_xtcpp[k] = np.array([v], dtype=np.float32)
+            small_data.save_summary(sumDict_for_xtcpp, sumDict_shape)
+        except Exception as e:
+            logger.warning(f"Failed to save summary data with save_summary: {e}")
+            logger.warning("Summary data (Sums) will not be saved. This may be expected if save_summary is not fully supported.")
 
     if rank == 0:
         logger.info("Saving detector configuration to UserDataCfg")
@@ -969,13 +985,39 @@ if True:
         else:
             Config = {"UserDataCfg": userDataCfg}
         # For xtcpp, save_summary needs flattened dict and shape dict
-        # Create shape dict BEFORE converting arrays to lists (need original shapes)
-        Config_shape = create_shape_dict(Config)
-        # Flatten dict structure
-        Config_flat = flatten_dict(Config)
-        # Convert numpy arrays to lists for xtcpp compatibility
-        Config_flat_converted = {k: convert_for_xtcpp(v) for k, v in Config_flat.items()}
-        small_data.save_summary(Config_flat_converted, Config_shape)  # this only works w/ 1 rank!
+        # Note: save_summary may not work if pyxtcpp doesn't have proper wrapper
+        # Wrap in try-except to allow code to continue if it fails
+        try:
+            # Create shape dict BEFORE converting arrays to lists (need original shapes)
+            Config_shape = create_shape_dict(Config)
+            # Flatten dict structure
+            Config_flat = flatten_dict(Config)
+            # Convert to numpy arrays (event() wrapper expects numpy arrays)
+            # Try passing numpy arrays like event() does, not lists
+            Config_for_xtcpp = {}
+            for k, v in Config_flat.items():
+                if isinstance(v, (list, tuple)):
+                    # Convert list back to numpy array for xtcpp compatibility
+                    # Handle mixed types in config - convert to string arrays if needed
+                    try:
+                        Config_for_xtcpp[k] = np.array(v, dtype=np.float32)
+                    except (ValueError, TypeError):
+                        # If conversion fails (e.g., strings), skip this key
+                        logger.debug(f"Skipping config key {k} (non-numeric type)")
+                        continue
+                elif isinstance(v, np.ndarray):
+                    Config_for_xtcpp[k] = v.astype(np.float32) if v.dtype != np.float32 else v
+                elif isinstance(v, (int, float)):
+                    Config_for_xtcpp[k] = np.array([v], dtype=np.float32)
+                else:
+                    # Skip non-numeric types (strings, dicts, etc.)
+                    logger.debug(f"Skipping config key {k} (unsupported type: {type(v)})")
+                    continue
+            if len(Config_for_xtcpp) > 0:
+                small_data.save_summary(Config_for_xtcpp, Config_shape)  # this only works w/ 1 rank!
+        except Exception as e:
+            logger.warning(f"Failed to save config data with save_summary: {e}")
+            logger.warning("Config data (UserDataCfg) will not be saved. This may be expected if save_summary is not fully supported.")
 
 # Finishing up:
 # Note: _xtcpp.SmallData doesn't have a done() method - cleanup happens automatically in destructor
