@@ -1208,3 +1208,15 @@ if args.postRuntable and rank == 0:
             auth=HTTPBasicAuth(args.experiment[:3] + "opr", answer[:-1]),
         )
         logger.debug(rp)
+
+# CRITICAL: Use os._exit() to prevent Python finalization from running
+# Python's finalization (Py_FinalizeEx) can trigger C++ destructors after MPI is finalized,
+# causing segfaults when Detector destructors try to call MPI_Win_free
+# os._exit() terminates the process immediately without running finalization
+if rank == 0:
+    logger.info("Rank 0: Script completed successfully, using os._exit() to prevent finalization segfault")
+# Synchronize all ranks before exit
+MPI.COMM_WORLD.Barrier()
+# Use os._exit() instead of normal exit to prevent Python finalization
+# This prevents C++ destructors from being called after MPI is finalized
+os._exit(0)
