@@ -667,9 +667,11 @@ for evt_num, evt in enumerate(event_iter):
     det_data = detData(default_dets, evt)
 
     # If we don't have the epics once data, try to get it!
-    if EODet is not None and EODetData["epicsOnce"] == {}:
-        EODetData = detData([EODet], evt)
-        EODetTS = evt._seconds + 631152000  # Convert to linux time.
+    # Note: For xtcpp, evt is an integer (event index), not an event object with _seconds
+    # EODet handling may need to be adapted for xtcpp
+    # if EODet is not None and EODetData["epicsOnce"] == {}:
+    #     EODetData = detData([EODet], evt)
+    #     EODetTS = evt._seconds + 631152000  # Convert to linux time.
 
     # detector data using DetObject
     userDict = {}
@@ -894,7 +896,8 @@ if True:
                 sumDict["Sums"]["%s_%s" % (det._name, key)] = sumData
             except:
                 print("Problem with data sum for %s and key %s" % (det._name, key))
-    if len(sumDict["Sums"].keys()) > 0 and small_data.summary:
+    # For xtcpp, save_summary can be called directly (no summary attribute check needed)
+    if len(sumDict["Sums"].keys()) > 0:
         small_data.save_summary(sumDict)
 
     if rank == 0:
@@ -925,24 +928,20 @@ if True:
                 Config = {"UserDataCfg": userDataCfg}
         else:
             Config = {"UserDataCfg": userDataCfg}
-        if small_data.summary:
-            small_data.save_summary(Config)  # this only works w/ 1 rank!
+        # For xtcpp, save_summary can be called directly
+        small_data.save_summary(Config)  # this only works w/ 1 rank!
 
 # Finishing up:
-# The filesystem seems to make smalldata.done fail. Some dirty tricks
-# are needed here.
-# Hopefully this can be removed soon.
-logger.debug(f"Smalldata type for rank {rank}: {small_data._type}")
-
 logger.debug(f"smalldata.done() on rank {rank}")
 small_data.done()
 
 
 # Epics data from the archiver
+# For xtcpp, we need to determine which rank should handle archiver data
+# Typically rank 0 handles this
 h5_rank = None
-if small_data._type == "client" and small_data._full_filename is not None:
-    if small_data._client_comm.Get_rank() == 0:
-        h5_rank = rank
+if rank == 0:
+    h5_rank = rank
 
 if rank == h5_rank:
     logger.info(f"Getting epics data from Archiver (rank: {rank})")

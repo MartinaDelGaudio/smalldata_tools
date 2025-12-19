@@ -328,11 +328,14 @@ class Epix100Object(TiledCameraObject):
         self.pixelsize = [50e-6]
         self.areas = None
 
-        if self.rms is None or (self.ped is not None and self.rms.shape != self.ped.shape):
+        if self.rms is None or (self.ped is not None and hasattr(self.rms, 'shape') and hasattr(self.ped, 'shape') and self.rms.shape != self.ped.shape):
             if self.ped is not None:
                 self.rms = np.ones_like(self.ped)
             else:
                 self.rms = None
+        elif self.rms is not None and not hasattr(self.rms, 'shape'):
+            # If rms is not an array, convert it
+            self.rms = None
         
         # For xtcpp, imgShape may need to be determined from data
         self.imgShape = None
@@ -353,76 +356,163 @@ class Epix100Object(TiledCameraObject):
 
         # For epix100 with xtcpp: use det.raw.raw(evt) instead of det.raw.calib(evt)
         # as per user's note: "det.raw.calib(evt) doesn't exist for epix100"
+        # Note: evt is an integer (event index) in xtcpp, not an event object
         if self.common_mode % 100 == 6:
             # Use raw instead of calib for xtcpp
             raw_data = self.det.raw.raw(evt)
-            if raw_data is not None and self.ped is not None:
-                self.evt.dat = raw_data - self.ped
-                if self.rms is not None:
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, normAll=True, mask=self.mask)
+            # Ensure raw_data is a numpy array
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            # Ensure mask is also an array if provided
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(self.evt.dat, self.rms, normAll=True, mask=mask_to_use)
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 6: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
             else:
-                self.evt.dat = raw_data
+                self.evt.dat = None
         elif self.common_mode % 100 == 36:
             raw_data = self.det.raw.raw(evt)
-            if raw_data is not None and self.ped is not None:
-                self.evt.dat = raw_data - self.ped
-                if self.rms is not None:
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=self.mask)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=mask_to_use)
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 36: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
             else:
-                self.evt.dat = raw_data
+                self.evt.dat = None
         elif self.common_mode % 100 == 34:
             raw_data = self.det.raw.raw(evt)
-            if raw_data is not None and self.ped is not None:
-                self.evt.dat = raw_data - self.ped
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape'):
+                    self.evt.dat = raw_data - self.ped
+                else:
+                    self.evt.dat = raw_data
             else:
-                self.evt.dat = raw_data
+                self.evt.dat = None
         elif self.common_mode % 100 == 4:
             raw_data = self.det.raw.raw(evt)
-            if raw_data is not None and self.ped is not None:
-                self.evt.dat = raw_data - self.ped
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape'):
+                    self.evt.dat = raw_data - self.ped
+                else:
+                    self.evt.dat = raw_data
             else:
-                self.evt.dat = raw_data
+                self.evt.dat = None
         elif self.common_mode % 100 == 45:
             raw_data = self.det.raw.raw(evt)
-            if raw_data is not None and self.ped is not None:
-                self.evt.dat = raw_data - self.ped
-                if self.rms is not None:
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=self.mask)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=mask_to_use)
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 45: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
             else:
-                self.evt.dat = raw_data
+                self.evt.dat = None
         elif self.common_mode % 100 == 46:
             raw_data = self.det.raw.raw(evt)
-            if raw_data is not None and self.ped is not None:
-                self.evt.dat = raw_data - self.ped
-                if self.rms is not None:
-                    self.evt.dat = cm_epix(
-                        self.evt.dat, self.rms, normAll=True, mask=self.mask
-                    )
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(
+                                self.evt.dat, self.rms, normAll=True, mask=mask_to_use
+                            )
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 46: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
             else:
-                self.evt.dat = raw_data
+                self.evt.dat = None
         elif self.common_mode % 100 == 47:
             raw_data = self.det.raw.raw(evt)
-            if raw_data is not None and self.ped is not None:
-                self.evt.dat = raw_data - self.ped
-                for _, bMask in enumerate(self.bankMasks):
-                    if self.evt.dat is not None:
-                        self.evt.dat[bMask] -= np.median(self.evt.dat[bMask])
-                if self.rms is not None:
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=self.mask)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        for _, bMask in enumerate(self.bankMasks):
+                            if self.evt.dat is not None and hasattr(self.evt.dat, '__getitem__'):
+                                self.evt.dat[bMask] -= np.median(self.evt.dat[bMask])
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=mask_to_use)
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 47: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
             else:
-                self.evt.dat = raw_data
+                self.evt.dat = None
         elif self.common_mode == 0:
-            self.evt.dat = self.det.raw.raw(evt)
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+            self.evt.dat = raw_data
         elif self.common_mode == -1:
-            self.evt.dat = self.det.raw.raw(evt)
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+            self.evt.dat = raw_data
         elif self.common_mode == 30:
             # For xtcpp, calib doesn't exist for epix100, so use raw
-            self.evt.dat = self.det.raw.raw(evt)
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+            self.evt.dat = raw_data
 
         # override gain if desired
         if (
             self.local_gain is not None
             and self.evt.dat is not None
+            and hasattr(self.evt.dat, 'shape')
+            and hasattr(self.local_gain, 'shape')
             and self.local_gain.shape == self.evt.dat.shape
             and self.common_mode in [6, 36, 34, 3, 4, 45, 46, 47]
         ):
@@ -431,6 +521,8 @@ class Epix100Object(TiledCameraObject):
             self.local_gain is None
             and self.gain is not None
             and self.evt.dat is not None
+            and hasattr(self.evt.dat, 'shape')
+            and hasattr(self.gain, 'shape')
             and self.gain.shape == self.evt.dat.shape
             and self.common_mode in [45, 46, 47]
         ):
@@ -491,6 +583,8 @@ class JungfrauObject(TiledCameraObject):
         if (
             self.local_gain is not None
             and self.evt.dat is not None
+            and hasattr(self.evt.dat, 'shape')
+            and hasattr(self.local_gain, 'shape')
             and self.local_gain.shape == self.evt.dat.shape
             and self.common_mode in [7, 71, 72, 0]
         ):
