@@ -2,7 +2,7 @@
 
 import numpy as np
 import json
-import psana
+import _xtcpp
 import time
 from datetime import datetime
 
@@ -96,21 +96,22 @@ def define_dets(run, det_list):
     dets = []
 
     for detname in det_list:
-        havedet = detname in thisrun.detnames
-
+        # For xtcpp, we can't check detnames the same way
+        # We'll try to create the detector and let DetObject handle errors
         # Common mode (default: None)
         common_mode = None
-
-        if not havedet:
-            continue
 
         if detname.find("fim") >= 0 or detname.find("w8") >= 0:
             # why different name for w8? To differentiate full det from BLD
             det = DetObject(
-                detname, thisrun, common_mode=common_mode, name=f"det_{detname}"
+                detname, ds, common_mode=common_mode, name=f"det_{detname}"
             )
         else:
-            det = DetObject(detname, thisrun, common_mode=common_mode)
+            det = DetObject(detname, ds, common_mode=common_mode)
+        
+        # Skip if detector creation failed (returns NullDetObject)
+        if isinstance(det, NullDetObject):
+            continue
         logger.debug(f"Instantiated det {detname}: {det}")
 
         #             **** Compression MUST be the first operation ****             #
@@ -291,7 +292,7 @@ from smalldata_tools.lcls2.default_detectors import (
     genericDetector,
 )
 from smalldata_tools.lcls2.hutch_default import defaultDetectors
-from smalldata_tools.lcls2.DetObject import DetObject
+from smalldata_tools.lcls2.DetObject_xtcpp import DetObject, NullDetObject
 
 from smalldata_tools.ana_funcs.roi_rebin import (
     ROIFunc,
@@ -562,19 +563,6 @@ else:
 # Get output file, check if we can write to it
 h5_f_name = get_sd_file(args.directory, exp, hutch)
 
-# Create data source.
-datasource_args = {"exp": exp, "run": int(run)}
-if not args.psdm_dir:
-    if useFFB:
-        datasource_args["live"] = True
-
-    if rank == 0:
-        logger.info("Opening the data source:")
-else:
-    datasource_args["dir"] = args.psdm_dir
-if args.nevents != 0:
-    datasource_args["max_events"] = args.nevents
-
 # Setup if integrating detectors are requested.
 if hasattr(config, "get_intg"):
     intg_main, intg_addl = config.get_intg(run)
@@ -584,76 +572,41 @@ else:
     intg_main, intg_addl = (None, None)
     skip_intg = True
 
-if intg_main is not None and intg_main != "":
-    ds = psana.DataSource(**datasource_args)
-    thisrun = next(ds.runs())
-    if not isinstance(thisrun, psana.psexp.null_ds.NullRun):
-        detnames = thisrun.detnames
-        if intg_main not in detnames:
-            skip_intg = True  # skip integrating detector setup
-            if rank == 0:
-                logger.error(
-                    f"Main integrating detector {intg_main} not found in the data."
-                )
-                logger.error("Skipping integrating detectors.")
-                logger.error(
-                    "Please check the integrating detector list in the config."
-                )
-        else:
-            datasource_args["intg_det"] = intg_main
-            datasource_args["intg_delta_t"] = args.intg_delta_t
-            datasource_args["batch_size"] = 1
-            os.environ["PS_SMD_N_EVENTS"] = (
-                "1"  # must be 1 for any non-zero value of delta_t
-            )
-            integrating_detectors = [
-                intg_main
-            ] + intg_addl  # for the detector instantiation
-    ds = None
-    thisrun = None
+# Create data source using xtcpp
+events_per_read = 4000  # Default value, can be made configurable
+if args.nevents != 0:
+    # Note: xtcpp doesn't have max_events parameter in the same way
+    # This would need to be handled in the event loop
+    pass
 
-if args.psplot_live_mode:
-    datasource_args["psmon_publish"] = publish
+ds = _xtcpp.MPIDataSource(exp, int(run), events_per_read)
 
-if hasattr(config, "xdetectors") and config.xdetectors:
-    datasource_args["xdetectors"] = config.xdetectors
-
-ds = psana.DataSource(**datasource_args)
-
-if ds.unique_user_rank():
-    print("#### DATASOURCE AND PSANA ENV VAR INFO ####")
-    print(f"Instantiated data source with arguments: {datasource_args}")
+if rank == 0:
+    print("#### DATASOURCE INFO ####")
+    print(f"Instantiated data source with experiment: {exp}, run: {run}")
     print(f"MPI size: {size}")
-    print(f"PS_EB_NODES={os.environ.get('PS_EB_NODES')}")
-    print(f"PS_SRV_NODES={os.environ.get('PS_SRV_NODES')}")
-    print(f"PS_SMD_N_EVENTS={os.environ.get('PS_SMD_N_EVENTS')}")  # defaults to 1000
-    print(f"DS batchsize: {ds.batch_size}")
-    print("#### END DATASOURCE AND PSANA ENV VAR INFO ####\n")
-    logger.info(f"Unique user rank: {rank}")
-
-thisrun = next(ds.runs())
+    print("#### END DATASOURCE INFO ####\n")
+    logger.info(f"Rank: {rank}")
 
 # Generate smalldata object
-if ds.unique_user_rank():
+if rank == 0:
     logger.info(
         "Opening the h5file %s, gathering at %d" % (h5_f_name, args.gather_interval)
     )
 if args.psplot_live_mode:
-    if ds.unique_user_rank():
+    if rank == 0:
         logger.info("Setting up psplot_live plots.")
-    psplot_configs = config.get_psplot_configs(int(run))
-    psplot_callbacks = psplot.PsplotCallbacks()
-
-    for key, item in psplot_configs.items():
-        callback_func = item.pop("callback")
-
-        psplot_callbacks.add_callback(callback_func(**item), name=key)
-    small_data = ds.smalldata(
-        filename=None, batch_size=args.gather_interval, callbacks=[psplot_callbacks.run]
-    )
+        logger.warning("psplot_live_mode not yet implemented for xtcpp")
+    # psplot_configs = config.get_psplot_configs(int(run))
+    # psplot_callbacks = psplot.PsplotCallbacks()
+    # for key, item in psplot_configs.items():
+    #     callback_func = item.pop("callback")
+    #     psplot_callbacks.add_callback(callback_func(**item), name=key)
+    small_data = _xtcpp.SmallData(batch_size=args.gather_interval)
 else:
-    small_data = ds.smalldata(filename=h5_f_name, batch_size=args.gather_interval)
-if ds.unique_user_rank():
+    small_data = _xtcpp.SmallData(batch_size=args.gather_interval)
+    # Note: filename handling may need to be done differently for xtcpp
+if rank == 0:
     logger.info("smalldata file has been successfully created.")
 
 
@@ -731,7 +684,9 @@ if not ds.is_srv():  # srv nodes do not have access to detectors.
                 if alias in vetoDets:
                     continue
                 try:
-                    thisDet = DetObject(alias, thisrun)
+                    thisDet = DetObject(alias, ds)
+                    if isinstance(thisDet, NullDetObject):
+                        continue
                     if alias.find("hsd") >= 0 and not args.nohsd:
                         hsdsplit = hsdsplitFunc()
                         thisDet.addFunc(hsdsplit)

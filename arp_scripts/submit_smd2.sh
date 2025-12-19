@@ -130,6 +130,36 @@ source $SIT_ENV_DIR/sw/conda2/manage/bin/psconda.sh
 # source /sdf/home/e/espov/dev/lcls2/setup_env.sh
 # source /sdf/group/lcls/ds/ana/sw/conda2/manage/bin/pscondatest.sh  # test env for new interface
 
+# Export xtcpp paths
+# XTCPP is expected to be built in the project root (sibling to smalldata_tools)
+XTCPP_DIR="$SMD_ROOT/../xtcpp"
+if [ -d "$XTCPP_DIR/install" ]; then
+    # Detect Python version for site-packages path
+    PYTHON_VER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    XTCPP_PYTHON_PATH="$XTCPP_DIR/install/lib/python${PYTHON_VER}/site-packages"
+    XTCPP_BIN_PATH="$XTCPP_DIR/install/bin"
+    
+    if [ -d "$XTCPP_PYTHON_PATH" ]; then
+        export PYTHONPATH="$XTCPP_PYTHON_PATH:${PYTHONPATH}"
+        echo "Added xtcpp Python bindings to PYTHONPATH: $XTCPP_PYTHON_PATH"
+    fi
+    
+    if [ -d "$XTCPP_BIN_PATH" ]; then
+        export PATH="$XTCPP_BIN_PATH:${PATH}"
+        echo "Added xtcpp binaries to PATH: $XTCPP_BIN_PATH"
+    fi
+    
+    # Optional: Set xtcpp environment variables for performance
+    # Use FAST mode for index distribution (faster than strict ordering)
+    export XTCPP_MPIDS_IDXMODE="${XTCPP_MPIDS_IDXMODE:-FAST}"
+    
+    # Optional: Set log level (can be overridden by user)
+    # export XTCPP_LOG_LEVEL="${XTCPP_LOG_LEVEL:-info}"
+else
+    echo "Warning: xtcpp install directory not found at $XTCPP_DIR/install"
+    echo "         xtcpp may not be built or installed correctly"
+fi
+
 # Figure out the right base path for the data (or use S3DF in force case)
 if [ -v FORCE_S3DF ]; then
     DATAPATH="/sdf/data/lcls/ds"
