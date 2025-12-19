@@ -602,9 +602,9 @@ if args.psplot_live_mode:
     # for key, item in psplot_configs.items():
     #     callback_func = item.pop("callback")
     #     psplot_callbacks.add_callback(callback_func(**item), name=key)
-    small_data = _xtcpp.SmallData(batch_size=args.gather_interval)
+    small_data = _xtcpp.SmallData(args.gather_interval)
 else:
-    small_data = _xtcpp.SmallData(batch_size=args.gather_interval)
+    small_data = _xtcpp.SmallData(args.gather_interval)
     # Note: filename handling may need to be done differently for xtcpp
 if rank == 0:
     logger.info("smalldata file has been successfully created.")
