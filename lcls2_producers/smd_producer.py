@@ -1033,6 +1033,47 @@ del small_data
 if rank == 0:
     logger.info("Rank 0: small_data object deleted, destructor should have completed")
 
+# CRITICAL: Explicitly delete detectors and datasource before MPI barrier
+# This ensures MPI resources (MPI_Win) are freed before MPI finalization
+# Python's garbage collection can happen after MPI_Finalize, causing segfaults
+if rank == 0:
+    logger.info("Rank 0: Cleaning up detectors and datasource before MPI barrier")
+
+# Delete detector objects explicitly to free MPI windows before MPI finalization
+# The detector objects hold references to C++ Detector objects that have MPI windows
+for det in dets:
+    try:
+        # Delete the underlying C++ detector object reference
+        if hasattr(det, 'det'):
+            del det.det
+        # Also delete the datasource reference
+        if hasattr(det, 'ds'):
+            del det.ds
+    except Exception as e:
+        logger.debug(f"Error cleaning up detector {det._name if hasattr(det, '_name') else 'unknown'}: {e}")
+dets.clear()
+
+for det in int_dets:
+    try:
+        if hasattr(det, 'det'):
+            del det.det
+        if hasattr(det, 'ds'):
+            del det.ds
+    except Exception as e:
+        logger.debug(f"Error cleaning up integrating detector {det._name if hasattr(det, '_name') else 'unknown'}: {e}")
+int_dets.clear()
+
+# Delete datasource explicitly to free MPI windows
+# This must happen after detectors are deleted since detectors hold references to ds
+del ds
+if rank == 0:
+    logger.info("Rank 0: Detectors and datasource cleaned up")
+
+# Force garbage collection to ensure all MPI resources are freed before MPI barrier
+import gc
+gc.collect()
+if rank == 0:
+    logger.info("Rank 0: Garbage collection completed, MPI resources should be freed")
 
 # Epics data from the archiver
 # For xtcpp, we need to determine which rank should handle archiver data
