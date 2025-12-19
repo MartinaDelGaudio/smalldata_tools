@@ -615,47 +615,19 @@ if rank == 0:
 ## Setting up the default detectors
 ##
 ##########################################################
-if not ds.is_srv():  # srv nodes do not have access to detectors.
-    default_dets = defaultDetectors(hutch.lower(), thisrun)
-    if ds.unique_user_rank():
-        logger.info("Default detectors loaded:")
-        for ddet in default_dets:
-            logger.info(f"{ddet.name}: {ddet.detname}")
+# For xtcpp, all ranks can access detectors (no srv nodes concept)
+# Note: defaultDetectors and epicsDetector may need to be adapted for xtcpp
+# For now, we'll skip default detectors setup as they depend on thisrun
+# TODO: Adapt defaultDetectors to work with xtcpp datasource
+default_dets = []
+if rank == 0:
+    logger.info("Default detectors setup skipped for xtcpp (needs adaptation)")
 
-    #
-    # add stuff here to save all EPICS PVs.
-    #
-    if args.full or args.epicsAll:
-        epicsPV = [k[0] for k in thisrun.epicsinfo]
-        if len(epicsPV) > 0:
-            try:
-                logger.info("epicsStore names for epicsAll", epicsPV)
-            except:
-                pass
-            logger.info("adding all epicsPVs....")
-            default_dets.append(
-                epicsDetector(PVlist=epicsPV, name="epicsAll", run=thisrun)
-            )
-    elif hasattr(config, "epicsArchFilePV") and len(config.epicsArchFilePV) > 0:
-        default_dets.append(
-            epicsDetector(PVlist=config.epicsArchFilePV, name="epicsUser", run=thisrun)
-        )
+EODet = None
+EODetData = {"epicsOnce": {}}
+EODetTS = None
 
-    if len(config.epicsOncePV) > 0:
-        EODet = epicsDetector(PVlist=config.epicsOncePV, name="epicsOnce", run=thisrun)
-    else:
-        EODet = None
-    EODetData = {"epicsOnce": {}}
-    EODetTS = None
-
-    default_det_aliases = [det.name for det in default_dets]
-
-    if args.rawFim:
-        for fim in default_det_aliases:
-            if fim.find("fim") >= 0:  # are you really a FIM?
-                default_dets.append(
-                    genericDetector(fim, run=thisrun, h5name="%s_raw" % fim)
-                )
+default_det_aliases = []
 
     dets = []
     int_dets = []
@@ -663,7 +635,7 @@ if not ds.is_srv():  # srv nodes do not have access to detectors.
         dets = define_dets(int(args.run), config.detectors)
         if not skip_intg:
             int_dets = define_dets(int(args.run), integrating_detectors)
-    if ds.unique_user_rank():
+    if rank == 0:
         logger.info(f"Detectors: {[det._name for det in dets]}")
         logger.info(f"Integrating detectors: {[det._name for det in int_dets]}")
     logger.debug(f"Rank {rank} detectors: {[det._name for det in dets]}")
@@ -673,46 +645,23 @@ if not ds.is_srv():  # srv nodes do not have access to detectors.
 
     det_presence = {}
     if args.full:
-        try:
-            aliases = [dn for dn in thisrun.detnames]
-            vetoDets = ["epicsinfo"]  # at least for run 339 of rixx43518
-
-            for alias in aliases:
-                det_presence[alias] = 1
-                if alias in default_det_aliases:
-                    continue
-                if alias in vetoDets:
-                    continue
-                try:
-                    thisDet = DetObject(alias, ds)
-                    if isinstance(thisDet, NullDetObject):
-                        continue
-                    if alias.find("hsd") >= 0 and not args.nohsd:
-                        hsdsplit = hsdsplitFunc()
-                        thisDet.addFunc(hsdsplit)
-                    else:
-                        fullROI = ROIFunc(writeArea=True)
-                        thisDet.addFunc(fullROI)
-                    if ds.unique_user_rank():
-                        print("adding detector for %s" % alias)
-                    dets.append(thisDet)
-                except:
-                    pass
-
-        except:
-            pass
+        # For xtcpp, we can't easily get all detector names without iterating
+        # For now, skip the full detector discovery
+        if rank == 0:
+            logger.warning("--full option not fully supported with xtcpp yet")
 
     evt_num = (
         -1
     )  # set this to default until I have a useable rank for printing updates...
-    if ds.unique_user_rank():
+    if rank == 0:
         logger.info("And now the event loop user....")
 
     normdict = {}
     for det in int_dets:
         normdict[det._name] = {"count": 0, "timestamp_min": 0, "timestamp_max": 0}
 
-event_iter = thisrun.events()
+# For xtcpp, iterate directly over the datasource
+event_iter = ds
 
 for evt_num, evt in enumerate(event_iter):
     det_data = detData(default_dets, evt)
@@ -855,7 +804,7 @@ for evt_num, evt in enumerate(event_iter):
         or (evt_num < 1000 and evt_num % 100 == 0)
         or (evt_num % 1000 == 0)
     ):
-        if (os.environ.get("ARP_JOB_ID", None)) is not None and ds.unique_user_rank():
+        if (os.environ.get("ARP_JOB_ID", None)) is not None and rank == 0:
             try:
                 requests.post(
                     os.environ["JID_UPDATE_COUNTERS"],
@@ -869,10 +818,11 @@ for evt_num, evt in enumerate(event_iter):
             except:
                 print("ARP update post failed")
                 pass
-        elif ds.unique_user_rank():
+        elif rank == 0:
             print("Processed evt %d" % evt_num)
 
-if not ds.is_srv():
+# For xtcpp, all ranks can process sums
+if True:
     sumDict = {"Sums": {}}
     for det in dets:
         for key in det.storeSum().keys():
@@ -884,7 +834,7 @@ if not ds.is_srv():
     if len(sumDict["Sums"].keys()) > 0 and small_data.summary:
         small_data.save_summary(sumDict)
 
-    if ds.unique_user_rank():
+    if rank == 0:
         logger.info("Saving detector configuration to UserDataCfg")
         userDataCfg = {}
         for det in default_dets:
@@ -978,7 +928,7 @@ if rank == h5_rank:
     h5_for_arch.close()
 
 MPI.COMM_WORLD.Barrier()
-if ds.unique_user_rank():
+if rank == 0:
     import h5py
 
     h5_for_arch = h5py.File(h5_f_name, "a")
@@ -1002,7 +952,7 @@ if ds.unique_user_rank():
 end_prod_time = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
 end_job = time.time()
 prod_time = (end_job - start_job) / 60
-if ds.unique_user_rank():
+if rank == 0:
     print("########## JOB TIME: {:03f} minutes ###########".format(prod_time))
 logger.debug("rank {0} on {1} is finished".format(rank, hostname))
 
@@ -1012,7 +962,7 @@ logger.debug("rank {0} on {1} is finished".format(rank, hostname))
 #        import subprocess
 #        cmd = ['timestamp_sort_h5', h5_f_name, h5_f_name]
 
-if ds.unique_user_rank():
+if rank == 0:
     if os.environ.get("ARP_JOB_ID", None) is not None:
         requests.post(
             os.environ["JID_UPDATE_COUNTERS"],
@@ -1027,7 +977,7 @@ if ds.unique_user_rank():
         print(f"Last Event: {evt_num}")
 
 
-if args.postRuntable and ds.unique_user_rank():
+if args.postRuntable and rank == 0:
     print("Posting to the run tables.")
     locStr = ""
     try:
