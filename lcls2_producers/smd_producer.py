@@ -605,7 +605,13 @@ if args.psplot_live_mode:
     small_data = _xtcpp.SmallData(args.gather_interval)
 else:
     small_data = _xtcpp.SmallData(args.gather_interval)
-    # Note: filename handling may need to be done differently for xtcpp
+    # Note: xtcpp creates per-rank files (test_<rank>.h5) by default
+    # The filename h5_f_name is not used directly by xtcpp
+    # Files may need to be merged later if needed
+if rank == 0:
+    logger.info("Opening smalldata file (xtcpp creates per-rank files)")
+# CRITICAL: Must call open_file() before using small_data, otherwise destructor will hang
+small_data.open_file()
 if rank == 0:
     logger.info("smalldata file has been successfully created.")
 
