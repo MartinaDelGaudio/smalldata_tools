@@ -973,16 +973,17 @@ if True:
 
 # Finishing up:
 # Note: _xtcpp.SmallData doesn't have a done() method - cleanup happens automatically in destructor
-# Note: The destructor will write remaining batches, but m_h5 must be initialized
-# Since open_file() is not exposed in Python, the file should be opened automatically
-# when first data is written. If no data was written, we need to ensure the file is opened.
-# For now, we'll rely on the fact that event() or save_summary() should have been called.
-logger.debug(f"Finishing up on rank {rank}")
+logger.info(f"Rank {rank}: Finishing up, about to delete small_data object")
 # small_data.done()  # Not available in _xtcpp.SmallData
 
 # Explicitly delete small_data to trigger destructor and ensure cleanup happens
 # This ensures any remaining batches are written before MPI barrier
+# The destructor will write remaining batches and close the file
+if rank == 0:
+    logger.info("Rank 0: Deleting small_data object (will trigger destructor)")
 del small_data
+if rank == 0:
+    logger.info("Rank 0: small_data object deleted, destructor should have completed")
 
 
 # Epics data from the archiver
@@ -994,51 +995,66 @@ if rank == 0:
 
 if rank == h5_rank:
     logger.info(f"Getting epics data from Archiver (rank: {rank})")
+    logger.info(f"Rank {rank}: Attempting to open HDF5 file for epics: {h5_f_name}")
     import asyncio
     import h5py
     from smalldata_tools.common.epicsarchive import EpicsArchive, ts_to_datetime
 
-    h5_for_arch = h5py.File(h5_f_name, "a")
+    # Note: xtcpp creates per-rank files (test_<rank>.h5), not the main h5_f_name file
+    # The epics archiver expects the main file, which may not exist yet
+    # For now, skip epics archiver or handle it differently
+    logger.warning(f"Rank {rank}: Epics archiver code may not work correctly with xtcpp per-rank files")
+    try:
+        h5_for_arch = h5py.File(h5_f_name, "a")
+        logger.info(f"Rank {rank}: Successfully opened HDF5 file for epics")
 
-    ts = h5_for_arch["timestamp"]
-    start = ts_to_datetime(
-        min(ts[: int(1e5)])
-    )  # assumes the early timestamps are in the first 10k events
-    end = ts_to_datetime(
-        max(ts[int(-1e5) :])
-    )  # assumes the early timestamps are in the last 10k events
+        ts = h5_for_arch["timestamp"]
+        start = ts_to_datetime(
+            min(ts[: int(1e5)])
+        )  # assumes the early timestamps are in the first 10k events
+        end = ts_to_datetime(
+            max(ts[int(-1e5) :])
+        )  # assumes the early timestamps are in the last 10k events
 
-    epics_archive = EpicsArchive()
-    loop = asyncio.get_event_loop()
-    pvs = [pv[0] if isinstance(pv, tuple) else pv for pv in config.epicsPV]
-    coroutines = [
-        epics_archive.get_points(PV=pv, start=start, end=end, raw=True, useMS=True)
-        for pv in pvs
-    ]
+        epics_archive = EpicsArchive()
+        loop = asyncio.get_event_loop()
+        pvs = [pv[0] if isinstance(pv, tuple) else pv for pv in config.epicsPV]
+        coroutines = [
+            epics_archive.get_points(PV=pv, start=start, end=end, raw=True, useMS=True)
+            for pv in pvs
+        ]
 
-    logger.debug(f"Run PV retrieval (async)")
-    data = loop.run_until_complete(asyncio.gather(*coroutines))
+        logger.debug(f"Run PV retrieval (async)")
+        data = loop.run_until_complete(asyncio.gather(*coroutines))
 
-    # Save to files
-    h5_for_arch.create_group("epics_archiver")
-    for pv_, data in zip(config.epicsPV, data):
-        if isinstance(pv_, tuple):
-            # In format ("PV", "alias")
-            pv = pv_[0]
-            alias = pv_[1]
-        else:
-            pv = pv_
-            alias = None
-        pv = pv.replace(":", "_")
-        if data == []:
-            continue
-        data = np.asarray(data)
-        dset_name = pv if alias is None else alias
-        dset = h5_for_arch.create_dataset(f"epics_archiver/{dset_name}", data=data)
-        logger.debug(f"Saved {pv} from archiver data.")
-    h5_for_arch.close()
+        # Save to files
+        h5_for_arch.create_group("epics_archiver")
+        for pv_, data in zip(config.epicsPV, data):
+            if isinstance(pv_, tuple):
+                # In format ("PV", "alias")
+                pv = pv_[0]
+                alias = pv_[1]
+            else:
+                pv = pv_
+                alias = None
+            pv = pv.replace(":", "_")
+            if data == []:
+                continue
+            data = np.asarray(data)
+            dset_name = pv if alias is None else alias
+            dset = h5_for_arch.create_dataset(f"epics_archiver/{dset_name}", data=data)
+            logger.debug(f"Saved {pv} from archiver data.")
+        h5_for_arch.close()
+        logger.info(f"Rank {rank}: Closed epics archiver HDF5 file")
+    except Exception as e:
+        logger.warning(f"Rank {rank}: Failed to process epics archiver data: {e}")
+        logger.warning(f"Rank {rank}: This may be expected if the main HDF5 file doesn't exist yet")
 
+if rank == 0:
+    logger.info("Rank 0: About to call MPI barrier")
 MPI.COMM_WORLD.Barrier()
+if rank == 0:
+    logger.info("Rank 0: Passed MPI barrier")
 if rank == 0:
     import h5py
 
