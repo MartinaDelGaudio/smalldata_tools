@@ -932,8 +932,9 @@ if True:
         small_data.save_summary(Config)  # this only works w/ 1 rank!
 
 # Finishing up:
-logger.debug(f"smalldata.done() on rank {rank}")
-small_data.done()
+# Note: _xtcpp.SmallData doesn't have a done() method - cleanup happens automatically in destructor
+logger.debug(f"Finishing up on rank {rank}")
+# small_data.done()  # Not available in _xtcpp.SmallData
 
 
 # Epics data from the archiver
