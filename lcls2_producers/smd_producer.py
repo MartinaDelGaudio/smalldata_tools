@@ -589,10 +589,22 @@ if rank == 0:
     logger.info(f"Rank: {rank}")
 
 # Generate smalldata object
-if rank == 0:
-    logger.info(
-        "Opening the h5file %s, gathering at %d" % (h5_f_name, args.gather_interval)
-    )
+# CRITICAL: xtcpp writes files to the current working directory as test_<rank>.h5
+# We need to change to the output directory before opening the file
+output_dir = h5_f_name.parent
+original_cwd = os.getcwd()
+try:
+    os.chdir(str(output_dir))
+    if rank == 0:
+        logger.info(f"Changed to output directory: {output_dir}")
+        logger.info(
+            "Opening the h5file %s, gathering at %d" % (h5_f_name, args.gather_interval)
+        )
+except Exception as e:
+    if rank == 0:
+        logger.warning(f"Could not change to output directory {output_dir}: {e}")
+        logger.warning("Files will be written to current directory: {0}".format(original_cwd))
+
 if args.psplot_live_mode:
     if rank == 0:
         logger.info("Setting up psplot_live plots.")
@@ -605,13 +617,13 @@ if args.psplot_live_mode:
     small_data = _xtcpp.SmallData(args.gather_interval)
 else:
     small_data = _xtcpp.SmallData(args.gather_interval)
-    # Note: xtcpp creates per-rank files (test_<rank>.h5) by default
+    # Note: xtcpp creates per-rank files (test_<rank>.h5) in the current working directory
     # The filename h5_f_name is not used directly by xtcpp
     # Files may need to be merged later if needed
     # CRITICAL: Must call open_file() before using small_data, otherwise destructor will hang
     small_data.open_file()
 if rank == 0:
-    logger.info("smalldata file has been opened (per-rank files: test_<rank>.h5)")
+    logger.info("smalldata file has been opened (per-rank files: test_<rank>.h5 in {0})".format(os.getcwd()))
 
 
 ##########################################################
