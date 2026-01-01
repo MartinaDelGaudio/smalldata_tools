@@ -1172,28 +1172,12 @@ int_dets.clear()
 
 # Synchronize all ranks before exit to ensure consistent state
 MPI.COMM_WORLD.Barrier()
-if rank == 0:
-    logger.info("Rank 0: All ranks synchronized, finalizing MPI before exit")
-
-# CRITICAL: Finalize MPI explicitly before exit
-# This allows MPI to clean up properly (free MPI windows, etc.)
-# We do this explicitly rather than relying on Python finalization
-# because we'll use os._exit() to prevent Python finalization from
-# triggering C++ destructors that might try to use MPI after it's finalized
 try:
-    MPI.Finalize()
-    if rank == 0:
-        logger.info("Rank 0: MPI finalized successfully")
-except Exception as e:
-    if rank == 0:
-        logger.warning(f"Rank 0: Error during MPI.Finalize(): {e}")
+    del small_data            # ALL ranks
+except Exception:
+    pass
+MPI.COMM_WORLD.Barrier()
 
-# CRITICAL: Use os._exit() to prevent Python finalization from running
-# Python's finalization (Py_FinalizeEx) can trigger C++ destructors after MPI is finalized,
-# causing segfaults when Detector destructors try to call MPI_Win_free.
-# os._exit() terminates the process immediately without running finalization,
-# which prevents destructors from being called in an unsafe state.
-# Note: We call MPI.Finalize() first to allow proper MPI cleanup.
-if rank == 0:
-    logger.info("Rank 0: Exiting with os._exit() to prevent Python finalization issues")
+MPI.Finalize()
 os._exit(0)
+
