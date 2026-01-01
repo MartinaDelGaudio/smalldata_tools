@@ -1142,44 +1142,30 @@ if args.postRuntable and rank == 0:
         )
         logger.debug(rp)
 
-# --- Deterministic cleanup to avoid MPI_Win_free after MPI finalize ---
-import gc
-
+# CRITICAL: Final cleanup before exit
+# The segfault occurs when C++ Detector destructors call MPI_Win_free during cleanup.
+# To minimize the risk, we do minimal cleanup and exit immediately with os._exit()
+# which prevents Python finalization from triggering destructors.
 if rank == 0:
-    logger.info("Final cleanup: destroying MPI-backed objects before shutdown")
+    logger.info("Rank 0: Performing final cleanup before exit")
 
-# Make sure all ranks reached the end
-COMM.Barrier()
+# Clear detector lists to break reference cycles
+# Do this as late as possible to minimize the window where GC might run
+dets.clear()
+int_dets.clear()
 
-# 1) Drop references that may own MPI windows
-try:
-    dets.clear()
-    int_dets.clear()
-except Exception:
-    pass
+# Don't delete datasource - it may cache detectors internally
+# Don't call gc.collect() - it would force destructors to run
+# os._exit() will prevent Python finalization, so destructors won't run
 
-# These can keep detectors alive internally
-try:
-    del ds
-except Exception:
-    pass
-
-# If anything else might hold DetObjects, drop it too
-try:
-    del event_iter
-except Exception:
-    pass
-
-# 2) Force destructors NOW (MPI still active here)
-gc.collect()
-
-
-# 3) Sync after destruction
-COMM.Barrier()
-
+# Synchronize all ranks before exit to ensure consistent state
+MPI.COMM_WORLD.Barrier()
 if rank == 0:
-    logger.info("Cleanup done; exiting")
+    logger.info("Rank 0: All ranks synchronized, exiting with os._exit() to prevent segfault")
 
-# Optional: keep hard-exit to prevent any late Python finalizers from running
+# CRITICAL: Use os._exit() to prevent Python finalization from running
+# Python's finalization (Py_FinalizeEx) can trigger C++ destructors after MPI is finalized,
+# causing segfaults when Detector destructors try to call MPI_Win_free.
+# os._exit() terminates the process immediately without running finalization,
+# which prevents destructors from being called in an unsafe state.
 os._exit(0)
-
