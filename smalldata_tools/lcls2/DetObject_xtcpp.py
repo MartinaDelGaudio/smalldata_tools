@@ -8,131 +8,69 @@ from mpi4py import MPI
 
 rank = MPI.COMM_WORLD.Get_rank()
 
-import _xtcpp  # noqa: F401
+import _xtcpp
 
 logger = logging.getLogger(__name__)
-
-
-# ----------------------------
-# Helper: robust detname resolve
-# ----------------------------
-def _try_det(ds, name):
-    try:
-        return ds.detector(name)
-    except Exception:
-        return None
-
-
-def _candidate_names(srcName):
-    """
-    Generate likely alternative names when config name doesn't match xtcpp name.
-    Typical case: epix100_1 (missing) -> epix100_0 (exists)
-    """
-    cands = [srcName]
-
-    # If name ends with _<int>, try _0 and also decrement
-    parts = srcName.rsplit("_", 1)
-    if len(parts) == 2 and parts[1].isdigit():
-        base, idx = parts[0], int(parts[1])
-        cands.append(f"{base}_0")
-        for j in range(idx - 1, -1, -1):
-            cands.append(f"{base}_{j}")
-        cands.append(base)  # also try stripping numeric suffix
-
-    # If name contains ':' or '/', try last component
-    if ":" in srcName:
-        cands.append(srcName.split(":")[-1])
-    if "/" in srcName:
-        cands.append(srcName.split("/")[-1])
-
-    # De-dup while preserving order
-    seen = set()
-    out = []
-    for n in cands:
-        if n and n not in seen:
-            seen.add(n)
-            out.append(n)
-    return out
-
-
-def _resolve_detname_and_det(ds, srcName):
-    for name in _candidate_names(srcName):
-        det = _try_det(ds, name)
-        if det is not None:
-            return name, det
-    return srcName, None
 
 
 def DetObject(srcName, ds, **kwargs):
     """
     Factory function to create detector objects using xtcpp.
-    Robust python-only version:
-      - tries alternate names when ds.detector(srcName) fails
-      - chooses class using name hints + available methods
+    Changed from psana version: takes ds (datasource) instead of run.
     """
     if rank == 0:
         logger.info(f"Getting the detector for: {srcName}")
-
-    resolved_name, det = _resolve_detname_and_det(ds, srcName)
-    if det is None:
+    det = None
+    try:
+        det = ds.detector(srcName)
+    except Exception as e:
         if rank == 0:
-            logger.warning(
-                f"failed to make detector for {srcName} (tried: {_candidate_names(srcName)})"
-            )
+            logger.warning(f"failed to make detector for {srcName}: {e}")
         return NullDetObject(name=srcName)
-
-    # Keep logical name for output keys, but store resolved name for debugging
-    kwargs.setdefault("name", srcName)
-    kwargs.setdefault("resolved_name", resolved_name)
-
-    lname = srcName.lower()
-
-    # PV / epics: in your C++ wrapper, epics dets usually have .get or are callable
-    is_pv = ("pv" in lname) or hasattr(det, "get") or callable(det)
-
-    # Camera-ish detectors: xtcpp typically adds .raw with methods on it
-    has_raw = hasattr(det, "raw")
-    has_calib = has_raw and hasattr(det.raw, "calib")
-    has_rawraw = has_raw and hasattr(det.raw, "raw")
-
-    # Prefer explicit name hints
-    if "jungfrau" in lname or "jungfr" in lname:
-        return JungfrauObject(det, ds, **kwargs)
-    if "epix100" in lname or "epix" in lname:
-        return Epix100Object(det, ds, **kwargs)
-
-    # If not hinted, decide by capabilities
-    if is_pv and not has_raw:
-        return PVObject(det, ds, **kwargs)
-
-    # Fallback: if it looks like a camera, default to Epix100Object (2D raw path exists there)
-    if has_calib or has_rawraw:
-        return Epix100Object(det, ds, **kwargs)
-
-    if rank == 0:
-        logger.warning(
-            f"Unknown detector type for {srcName} (resolved: {resolved_name}), defaulting to NullDetObject"
-        )
-    return NullDetObject(name=srcName)
+    
+    # For xtcpp, we need to determine detector type differently
+    # For now, we'll use the detector name to infer type
+    detector_type = None
+    if "epix100" in srcName.lower():
+        detector_type = "epix100"
+    elif "jungfrau" in srcName.lower():
+        detector_type = "jungfrau"
+    elif "pv" in srcName.lower() or hasattr(det, 'get'):
+        detector_type = "pv"
+    else:
+        if rank == 0:
+            logger.warning(f"Unknown detector type for {srcName}, defaulting to NullDetObject")
+        return NullDetObject(name=srcName)
+    
+    detector_classes = {
+        "epix100": Epix100Object,
+        "jungfrau": JungfrauObject,
+        "pv": PVObject,
+    }
+    
+    cls = detector_classes.get(detector_type)
+    if cls is None:
+        return NullDetObject(name=srcName)
+    
+    return cls(det, ds, **kwargs)
 
 
 class DetObjectClass(object):
-    def __init__(self, det, ds, **kwargs):
+    def __init__(
+        self, det, ds, **kwargs
+    ):  # Changed: ds instead of run
         self.det = det
-
+        # For xtcpp, we may not have _detid or _det_name
         try:
-            self._detid = getattr(det, "_detid", None)
-        except Exception:
+            self._detid = getattr(det, '_detid', None)
+        except:
             self._detid = None
-
-        # IMPORTANT: don't default to 'unknown' based on det internals (xtcpp wrapper won't have _det_name)
-        self._name = kwargs.get("name", "unknown")
-        self._resolved_name = kwargs.get("resolved_name", self._name)
-
-        self.ds = ds
+        self._name = kwargs.get("name", getattr(det, '_det_name', 'unknown'))
+        
+        self.ds = ds  # Changed: store ds instead of run
         self._storeSum = {}
         self.applyMask = kwargs.get("applyMask", 0)
-
+        
         self.dataAccessTime = 0.0
 
     def params_as_dict(self):
@@ -169,6 +107,7 @@ class DetObjectClass(object):
             }
         )
 
+        # Add parameters of function to dict with composite keyt(sf._name, key)
         subFuncs = [
             self.__dict__[key]
             for key in self.__dict__
@@ -199,7 +138,7 @@ class DetObjectClass(object):
                 self.evt.dat[self.mask == 0] = 0
             if self.applyMask == 2:
                 self.evt.dat[self.cmask == 0] = 0
-        except Exception:
+        except:
             print("Could not apply mask to data for detector ", self._name)
 
     def storeSum(self, sumAlgo=None):
@@ -220,22 +159,22 @@ class DetObjectClass(object):
     def setGain(self, gain):
         """
         Set a local gain.
-        This file is supposed to be applied on top of whatever corrections DetObject will apply.
+        This file is supposed to be applied on top of whatever corrections DetObject will apply, given the common mode
         """
         self.local_gain = gain
 
     def getData(self, evt):
         try:
             getattr(self, "evt")
-        except Exception:
+        except:
             self.evt = Event()
         self.evt.dat = None
 
     def addFunc(self, func):
-        func.setFromDet(self)
+        func.setFromDet(self)  #  Pass parameters from det (rms, geometry, .....)
         try:
-            func.setFromFunc()
-        except Exception:
+            func.setFromFunc()  # Pass parameters from itself to children (rms, bounds, .....)
+        except:
             print("Failed to pass parameters to children of ", func._name)
         self.__dict__[func._name] = func
 
@@ -248,11 +187,13 @@ class DetObjectClass(object):
             for k in self.__dict__
             if isinstance(self.__dict__[k], DetObjectFunc)
         ]:
-            retData = func.process(self.evt.dat)
-            self.evt.__dict__["_write_%s" % func._name] = retData
+            if 1:
+                retData = func.process(self.evt.dat)
+                self.evt.__dict__["_write_%s" % func._name] = retData
 
     def processSums(self):
         for key in self._storeSum.keys():
+            asImg = False
             thres = -1.0e9
             for skey in key.split("_"):
                 if skey.find("thresADU") >= 0:
@@ -278,8 +219,10 @@ class DetObjectClass(object):
                     if key.find("max") < 0:
                         self._storeSum[key] += dat_to_be_summed
                     else:
-                        self._storeSum[key] = np.maximum(self._storeSum[key], dat_to_be_summed)
-                except Exception:
+                        self._storeSum[key] = np.maximum(
+                            self._storeSum[key], dat_to_be_summed
+                        )
+                except:
                     print("could not add ", dat_to_be_summed)
                     print("could not to ", self._storeSum[key])
 
@@ -292,7 +235,6 @@ class NullDetObject:
 
     def __init__(self, *args, **kwargs):
         self._name = kwargs.get("name", "NullDetObject")
-        self._resolved_name = kwargs.get("resolved_name", self._name)
         self.det = None
         self.ds = None
         self.evt = Event()
@@ -301,17 +243,23 @@ class NullDetObject:
         self.dataAccessTime = 0.0
 
     def addFunc(self, func):
+        """
+        Do nothing, as this is a null object.
+        """
         pass
 
 
 class CameraObject(DetObjectClass):
-    def __init__(self, det, ds, **kwargs):
+    def __init__(self, det, ds, **kwargs):  # Changed: ds instead of run
         super(CameraObject, self).__init__(det, ds, **kwargs)
         self._common_mode_list = [0, -1, 30]  # none, raw, calib
         self.common_mode = kwargs.get("common_mode", self._common_mode_list[0])
         if self.common_mode is None:
             self.common_mode = self._common_mode_list[0]
-        if self.common_mode not in self._common_mode_list and type(self) is CameraObject:
+        if (
+            self.common_mode not in self._common_mode_list
+            and type(self) is CameraObject
+        ):
             print(
                 "Common mode %d is not an option for a CameraObject, please choose from: "
                 % self.common_mode,
@@ -320,13 +268,14 @@ class CameraObject(DetObjectClass):
         self.pixelsize = None
         self.isGainswitching = False
 
-        # xtcpp: calib constants/geometry not available (yet)
+        # For xtcpp, calibration constants may not be available the same way
+        # These will need to be set manually or retrieved differently
         self.ped = None
         self.rms = None
         self.gain = None
         self.mask = None
         self.cmask = None
-
+        
         self.local_gain = None
         self._getImgShape()
         self._gainSwitching = False
@@ -340,9 +289,10 @@ class CameraObject(DetObjectClass):
 
 
 class TiledCameraObject(CameraObject):
-    def __init__(self, det, ds, **kwargs):
+    def __init__(self, det, ds, **kwargs):  # Changed: ds instead of run
         super(TiledCameraObject, self).__init__(det, ds, **kwargs)
-        # no geometry yet
+        # For xtcpp, geometry may not be available yet
+        # See user's note: "I didn't add the geometry yet. So anything like det.raw.image will not work"
         self.ix = None
         self.iy = None
         self._needsGeo = True
@@ -352,9 +302,20 @@ class TiledCameraObject(CameraObject):
 
 
 class Epix100Object(TiledCameraObject):
-    def __init__(self, det, ds, **kwargs):
+    def __init__(self, det, ds, **kwargs):  # Changed: ds instead of run
         super().__init__(det, ds, **kwargs)
-        self._common_mode_list = [6, 36, 4, 34, 45, 46, 47, 0, -1, 30]
+        self._common_mode_list = [
+            6,
+            36,
+            4,
+            34,
+            45,
+            46,
+            47,
+            0,
+            -1,
+            30,
+        ]
         self.common_mode = kwargs.get("common_mode", self._common_mode_list[0])
         if self.common_mode is None:
             self.common_mode = self._common_mode_list[0]
@@ -367,86 +328,191 @@ class Epix100Object(TiledCameraObject):
         self.pixelsize = [50e-6]
         self.areas = None
 
-        if self.rms is None or (
-            self.ped is not None
-            and hasattr(self.rms, "shape")
-            and hasattr(self.ped, "shape")
-            and self.rms.shape != self.ped.shape
-        ):
-            self.rms = np.ones_like(self.ped) if self.ped is not None else None
-        elif self.rms is not None and not hasattr(self.rms, "shape"):
+        if self.rms is None or (self.ped is not None and hasattr(self.rms, 'shape') and hasattr(self.ped, 'shape') and self.rms.shape != self.ped.shape):
+            if self.ped is not None:
+                self.rms = np.ones_like(self.ped)
+            else:
+                self.rms = None
+        elif self.rms is not None and not hasattr(self.rms, 'shape'):
+            # If rms is not an array, convert it
             self.rms = None
-
+        
+        # For xtcpp, imgShape may need to be determined from data
         self.imgShape = None
 
-        # FIX: integer slicing (Python3 division was producing floats)
         self.bankMasks = []
         if self.common_mode == 47 and self.rms is not None:
             for i in range(0, 16):
                 bmask = np.zeros_like(self.rms)
-                col0 = (768 // 8) * (i // 2)
-                col1 = (768 // 8) * ((i // 2) + 1)
-                bmask[(i % 2) * 352 : (i % 2 + 1) * 352, col0:col1] = 1
+                bmask[
+                    (i % 2) * 352 : (i % 2 + 1) * 352,
+                    768 / 8 * (i / 2) : 768 / 8 * (i / 2 + 1),
+                ] = 1
                 self.bankMasks.append(bmask.astype(bool))
 
     def getData(self, evt):
         super().getData(evt)
+        mbits = 0
 
-        # xtcpp epix100: use raw.raw(evt)
-        def _raw():
-            try:
-                rd = self.det.raw.raw(evt)
-                return np.asarray(rd) if rd is not None and not isinstance(rd, np.ndarray) else rd
-            except Exception:
-                return None
-
-        raw_data = _raw()
-
-        if raw_data is None:
-            self.evt.dat = None
-            return
-
-        cm = self.common_mode
-
-        if cm in [0, -1, 30]:
-            self.evt.dat = raw_data
-        elif cm % 100 in [6, 36, 34, 4, 45, 46, 47]:
-            # pedestal subtract if available
-            if self.ped is not None and hasattr(self.ped, "shape") and hasattr(raw_data, "shape"):
-                try:
-                    self.evt.dat = raw_data - self.ped
-                except Exception as e:
-                    logger.warning(f"Error pedestal-sub epix100 ({self._name}) cm={cm}: {e}")
+        # For epix100 with xtcpp: use det.raw.raw(evt) instead of det.raw.calib(evt)
+        # as per user's note: "det.raw.calib(evt) doesn't exist for epix100"
+        # Note: evt is an integer (event index) in xtcpp, not an event object
+        if self.common_mode % 100 == 6:
+            # Use raw instead of calib for xtcpp
+            raw_data = self.det.raw.raw(evt)
+            # Ensure raw_data is a numpy array
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            # Ensure mask is also an array if provided
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(self.evt.dat, self.rms, normAll=True, mask=mask_to_use)
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 6: {e}")
+                        self.evt.dat = raw_data
+                else:
                     self.evt.dat = raw_data
             else:
-                self.evt.dat = raw_data
-
-            # apply common-mode where your original code did
-            try:
-                if cm % 100 == 6:
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, normAll=True, mask=self.mask)
-                elif cm % 100 == 36:
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=self.mask)
-                elif cm % 100 == 45:
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=self.mask)
-                elif cm % 100 == 46:
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, normAll=True, mask=self.mask)
-                elif cm % 100 == 47:
-                    for bMask in self.bankMasks:
-                        self.evt.dat[bMask] -= np.median(self.evt.dat[bMask])
-                    self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=self.mask)
-            except Exception as e:
-                logger.warning(f"Error common-mode epix100 ({self._name}) cm={cm}: {e}")
-        else:
-            # unknown mode: just raw
+                self.evt.dat = None
+        elif self.common_mode % 100 == 36:
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=mask_to_use)
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 36: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
+            else:
+                self.evt.dat = None
+        elif self.common_mode % 100 == 34:
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape'):
+                    self.evt.dat = raw_data - self.ped
+                else:
+                    self.evt.dat = raw_data
+            else:
+                self.evt.dat = None
+        elif self.common_mode % 100 == 4:
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape'):
+                    self.evt.dat = raw_data - self.ped
+                else:
+                    self.evt.dat = raw_data
+            else:
+                self.evt.dat = None
+        elif self.common_mode % 100 == 45:
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=mask_to_use)
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 45: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
+            else:
+                self.evt.dat = None
+        elif self.common_mode % 100 == 46:
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(
+                                self.evt.dat, self.rms, normAll=True, mask=mask_to_use
+                            )
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 46: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
+            else:
+                self.evt.dat = None
+        elif self.common_mode % 100 == 47:
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+                if self.ped is not None and hasattr(self.ped, 'shape') and hasattr(raw_data, 'shape'):
+                    try:
+                        self.evt.dat = raw_data - self.ped
+                        for _, bMask in enumerate(self.bankMasks):
+                            if self.evt.dat is not None and hasattr(self.evt.dat, '__getitem__'):
+                                self.evt.dat[bMask] -= np.median(self.evt.dat[bMask])
+                        if self.rms is not None and hasattr(self.rms, 'shape') and hasattr(self.evt.dat, 'shape'):
+                            mask_to_use = self.mask
+                            if mask_to_use is not None and not isinstance(mask_to_use, np.ndarray):
+                                mask_to_use = np.asarray(mask_to_use)
+                            self.evt.dat = cm_epix(self.evt.dat, self.rms, mask=mask_to_use)
+                    except Exception as e:
+                        logger.warning(f"Error processing epix100 data with common_mode 47: {e}")
+                        self.evt.dat = raw_data
+                else:
+                    self.evt.dat = raw_data
+            else:
+                self.evt.dat = None
+        elif self.common_mode == 0:
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+            self.evt.dat = raw_data
+        elif self.common_mode == -1:
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
+            self.evt.dat = raw_data
+        elif self.common_mode == 30:
+            # For xtcpp, calib doesn't exist for epix100, so use raw
+            raw_data = self.det.raw.raw(evt)
+            if raw_data is not None:
+                if not isinstance(raw_data, np.ndarray):
+                    raw_data = np.asarray(raw_data)
             self.evt.dat = raw_data
 
         # override gain if desired
         if (
             self.local_gain is not None
             and self.evt.dat is not None
-            and hasattr(self.evt.dat, "shape")
-            and hasattr(self.local_gain, "shape")
+            and hasattr(self.evt.dat, 'shape')
+            and hasattr(self.local_gain, 'shape')
             and self.local_gain.shape == self.evt.dat.shape
             and self.common_mode in [6, 36, 34, 3, 4, 45, 46, 47]
         ):
@@ -455,21 +521,29 @@ class Epix100Object(TiledCameraObject):
             self.local_gain is None
             and self.gain is not None
             and self.evt.dat is not None
-            and hasattr(self.evt.dat, "shape")
-            and hasattr(self.gain, "shape")
+            and hasattr(self.evt.dat, 'shape')
+            and hasattr(self.gain, 'shape')
             and self.gain.shape == self.evt.dat.shape
             and self.common_mode in [45, 46, 47]
         ):
             self.evt.dat *= self.gain
 
+        # correct for area of pixels.
         if self.areas is not None and self.evt.dat is not None:
             self.evt.dat /= self.areas
 
 
 class JungfrauObject(TiledCameraObject):
-    def __init__(self, det, ds, **kwargs):
+    def __init__(self, det, ds, **kwargs):  # Changed: ds instead of run, removed run usage
         super().__init__(det, ds, **kwargs)
-        self._common_mode_list = [0, 7, 71, 72, -1, 30]
+        self._common_mode_list = [
+            0,
+            7,
+            71,
+            72,
+            -1,
+            30,
+        ]
         self.common_mode = kwargs.get("common_mode", self._common_mode_list[0])
         if self.common_mode is None:
             self.common_mode = self._common_mode_list[0]
@@ -481,29 +555,36 @@ class JungfrauObject(TiledCameraObject):
             )
         self.pixelsize = [75e-6]
         self.isGainswitching = True
+
+        # Removed: self.imgShape = self.det.raw.image(run, self.ped[0]).shape
+        # Geometry not available yet in xtcpp
         self.imgShape = None
         self._gainSwitching = True
 
     def getData(self, evt):
         super(JungfrauObject, self).getData(evt)
+        mbits = 0
+        
+        # For jungfrau with xtcpp: use det.raw.calib(evt) as per user's note
+        if self.common_mode == 0:
+            self.evt.dat = self.det.raw.calib(evt)
+        elif self.common_mode % 100 == 71:
+            self.evt.dat = self.det.raw.calib(evt)
+        elif self.common_mode % 100 == 72:
+            self.evt.dat = self.det.raw.calib(evt)
+        elif self.common_mode % 100 == 7:
+            self.evt.dat = self.det.raw.calib(evt)
+        elif self.common_mode == -1:
+            self.evt.dat = self.det.raw.raw(evt)
+        elif self.common_mode == 30:
+            self.evt.dat = self.det.raw.calib(evt)
 
-        # xtcpp jungfrau: calib exists (C++ binding adds calib for jungfrau)
-        try:
-            if self.common_mode in [0, 7, 71, 72, 30]:
-                self.evt.dat = self.det.raw.calib(evt)
-            elif self.common_mode == -1:
-                self.evt.dat = self.det.raw.raw(evt)
-            else:
-                self.evt.dat = self.det.raw.calib(evt)
-        except Exception as e:
-            logger.warning(f"Jungfrau getData failed for {self._name}: {e}")
-            self.evt.dat = None
-
+        # override gain if desired
         if (
             self.local_gain is not None
             and self.evt.dat is not None
-            and hasattr(self.evt.dat, "shape")
-            and hasattr(self.local_gain, "shape")
+            and hasattr(self.evt.dat, 'shape')
+            and hasattr(self.local_gain, 'shape')
             and self.local_gain.shape == self.evt.dat.shape
             and self.common_mode in [7, 71, 72, 0]
         ):
@@ -511,15 +592,18 @@ class JungfrauObject(TiledCameraObject):
 
 
 class PVObject(CameraObject):
-    def __init__(self, det, ds, **kwargs):
+    def __init__(self, det, ds, **kwargs):  # Changed: ds instead of run
         super(PVObject, self).__init__(det, ds, **kwargs)
 
     def getData(self, evt):
         super(PVObject, self).getData(evt)
+        # For PV with xtcpp: use det.get(evt) as per user's note
         try:
             self.evt.dat = self.det.get(evt)
-        except Exception:
+        except:
+            # Fallback to raw.value if get doesn't work
             try:
                 self.evt.dat = self.det.raw.value(evt)
-            except Exception:
+            except:
                 self.evt.dat = None
+
