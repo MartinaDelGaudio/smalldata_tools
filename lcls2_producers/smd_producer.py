@@ -48,6 +48,91 @@ if rank == 0:
             logger.info("Could not determine what psana environment is in use.")
 
 
+# -----------------------------
+# xtcpp_pack helpers
+# -----------------------------
+def _is_scalar_number(x):
+    return isinstance(x, (int, float, np.integer, np.floating, bool))
+
+
+def _to_numpy_1d(x):
+    """Convert x into a 1D numpy array (numeric) suitable for the pybind writer."""
+    if isinstance(x, np.ndarray):
+        if x.dtype == object:
+            # object arrays are dangerous for pybind/std::any; try best-effort cast
+            try:
+                x = x.astype(np.float32)
+            except Exception:
+                # fall back to bytes of repr
+                x = np.array([repr(v) for v in x.ravel()], dtype="S")
+        return np.asarray(x).ravel()
+    if isinstance(x, np.ma.MaskedArray):
+        return np.asarray(x.filled()).ravel()
+    if _is_scalar_number(x):
+        return np.asarray([x], dtype=np.float32)
+    if isinstance(x, (bytes, bytearray)):
+        return np.frombuffer(bytes(x), dtype=np.uint8)
+    if isinstance(x, str):
+        # store as fixed-width bytes (1D array)
+        return np.asarray([x.encode("utf-8")], dtype="S")
+    if isinstance(x, (list, tuple)):
+        # Try numeric first
+        try:
+            arr = np.asarray(x)
+            if arr.dtype.kind in ("i", "u", "f", "b"):
+                return arr.ravel()
+        except Exception:
+            pass
+        # Fall back to string bytes
+        return np.asarray([repr(v).encode("utf-8") for v in x], dtype="S")
+    # Unknown type: store repr as bytes
+    return np.asarray([repr(x).encode("utf-8")], dtype="S")
+
+
+def xtcpp_pack(data_dict, prefix=""):
+    """
+    Pack an arbitrarily nested dict into (flat_data, shape_dict) expected by xtcpp.
+    - flat_data: dict[str, np.ndarray] (1D arrays)
+    - shape_dict: dict[str, list[int]] original shapes (empty list for scalars)
+    Keys are joined with '/'.
+    """
+    flat = {}
+    shapes = {}
+
+    def _walk(obj, pfx):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                key = f"{pfx}/{k}" if pfx else str(k)
+                _walk(v, key)
+            return
+
+        arr = _to_numpy_1d(obj)
+        flat[pfx] = arr
+
+        # For shape: preserve original ndarray shape; scalars -> []
+        if isinstance(obj, np.ndarray):
+            shapes[pfx] = list(obj.shape)
+        elif isinstance(obj, np.ma.MaskedArray):
+            shapes[pfx] = list(np.asarray(obj).shape)
+        elif _is_scalar_number(obj) or isinstance(obj, (str, bytes, bytearray)):
+            shapes[pfx] = []
+        elif isinstance(obj, (list, tuple)):
+            # If list-of-numbers treat as 1D length
+            try:
+                arr2 = np.asarray(obj)
+                if arr2.dtype.kind in ("i", "u", "f", "b"):
+                    shapes[pfx] = [len(arr2)]
+                else:
+                    shapes[pfx] = [len(obj)]
+            except Exception:
+                shapes[pfx] = [len(obj)]
+        else:
+            shapes[pfx] = []
+
+    _walk(data_dict, prefix)
+    return flat, shapes
+
+
 # DEFINE DETECTOR AND ADD ANALYSIS FUNCTIONS
 def define_dets(run, det_list):
     # Load DetObjectFunc parameters (if defined)
@@ -191,11 +276,6 @@ def define_dets(run, det_list):
             dropfunc.addFunc(drop2phot_func)
             det.addFunc(dropfunc)
 
-        # if detname in dimgs_args:
-        #     # Detector image (det.raw.image())
-        #     dimg_func = detImageFunc(**dimgs_args[detname])
-        #     det.addFunc(dimg_func)
-
         if detname in wfs_int_args:
             # Waveform integration
             wfs_int_func = WfIntegration(**wfs_int_args[detname])
@@ -255,10 +335,6 @@ def define_dets(run, det_list):
 
         if sum_algo_args == {}:
             # Store calib by default even if algos. dictionary not defined
-            # NOTE: This can cause issues if you are relying on it for sums, and have
-            #       added a waveform PV detector (like a QADC) to the detnames list.
-            #       If this is causing issues, the simple fix is just to define the
-            #       sum algorithms in the config file explicitly
             det.storeSum(sumAlgo="calib")
         else:
             # Add `all` algorithms
@@ -603,27 +679,25 @@ try:
 except Exception as e:
     if rank == 0:
         logger.warning(f"Could not change to output directory {output_dir}: {e}")
-        logger.warning("Files will be written to current directory: {0}".format(original_cwd))
+        logger.warning(
+            "Files will be written to current directory: {0}".format(original_cwd)
+        )
 
 if args.psplot_live_mode:
     if rank == 0:
         logger.info("Setting up psplot_live plots.")
         logger.warning("psplot_live_mode not yet implemented for xtcpp")
-    # psplot_configs = config.get_psplot_configs(int(run))
-    # psplot_callbacks = psplot.PsplotCallbacks()
-    # for key, item in psplot_configs.items():
-    #     callback_func = item.pop("callback")
-    #     psplot_callbacks.add_callback(callback_func(**item), name=key)
     small_data = _xtcpp.SmallData(args.gather_interval)
 else:
     small_data = _xtcpp.SmallData(args.gather_interval)
-    # Note: xtcpp creates per-rank files (test_<rank>.h5) in the current working directory
-    # The filename h5_f_name is not used directly by xtcpp
-    # Files may need to be merged later if needed
     # CRITICAL: Must call open_file() before using small_data, otherwise destructor will hang
     small_data.open_file()
 if rank == 0:
-    logger.info("smalldata file has been opened (per-rank files: test_<rank>.h5 in {0})".format(os.getcwd()))
+    logger.info(
+        "smalldata file has been opened (per-rank files: test_<rank>.h5 in {0})".format(
+            os.getcwd()
+        )
+    )
 
 
 ##########################################################
@@ -632,9 +706,6 @@ if rank == 0:
 ##
 ##########################################################
 # For xtcpp, all ranks can access detectors (no srv nodes concept)
-# Note: defaultDetectors and epicsDetector may need to be adapted for xtcpp
-# For now, we'll skip default detectors setup as they depend on thisrun
-# TODO: Adapt defaultDetectors to work with xtcpp datasource
 default_dets = []
 if rank == 0:
     logger.info("Default detectors setup skipped for xtcpp (needs adaptation)")
@@ -661,14 +732,10 @@ logger.debug(
 
 det_presence = {}
 if args.full:
-    # For xtcpp, we can't easily get all detector names without iterating
-    # For now, skip the full detector discovery
     if rank == 0:
         logger.warning("--full option not fully supported with xtcpp yet")
 
-evt_num = (
-    -1
-)  # set this to default until I have a useable rank for printing updates...
+evt_num = -1
 if rank == 0:
     logger.info("And now the event loop user....")
 
@@ -685,15 +752,8 @@ for evt_num, evt in enumerate(event_iter):
         if rank == 0:
             logger.info(f"Reached event limit ({args.nevents}), stopping event loop")
         break
-    
-    det_data = detData(default_dets, evt)
 
-    # If we don't have the epics once data, try to get it!
-    # Note: For xtcpp, evt is an integer (event index), not an event object with _seconds
-    # EODet handling may need to be adapted for xtcpp
-    # if EODet is not None and EODetData["epicsOnce"] == {}:
-    #     EODetData = detData([EODet], evt)
-    #     EODetTS = evt._seconds + 631152000  # Convert to linux time.
+    det_data = detData(default_dets, evt)
 
     # detector data using DetObject
     userDict = {}
@@ -706,20 +766,17 @@ for evt_num, evt in enumerate(event_iter):
                 envData = getUserEnvData(det)
                 if len(envData.keys()) > 0:
                     userDict[det._name + "_env"] = envData
-            except:
+            except Exception:
                 pass
             det.processSums()
-            # print(userDict[det._name])
         except Exception as e:
-            logger.warning(f"Failed analyzing det {det} on evt {evt_num}")
-            print(e)
+            logger.warning(f"Failed analyzing det {det} on evt {evt_num}: {e}")
             pass
 
     # Combine default data & user data into single dict.
     det_data.update(userDict)
 
     # Integrating detectors
-
     if len(int_dets) > 0:
         userDictInt = {}
         # Get summed fast detectors' data for integrating detector event
@@ -762,9 +819,7 @@ for evt_num, evt in enumerate(event_iter):
                     logger.info(
                         f"Rank {rank}: Integrating detector {det._name} has no data on evt {evt_num}"
                     )
-                    userDictInt[det._name] = (
-                        {}
-                    )  # so we can still get the summed fast data
+                    userDictInt[det._name] = {}  # still get summed fast data
 
                 else:
                     det.processFuncs()
@@ -777,7 +832,7 @@ for evt_num, evt in enumerate(event_iter):
                         envData = getUserEnvData(det)
                         if len(envData.keys()) > 0:
                             userDictInt[det._name + "_env"] = envData
-                    except:
+                    except Exception:
                         pass
 
                 # save data in integrating det dictionary & reset norm dictionary
@@ -785,124 +840,24 @@ for evt_num, evt in enumerate(event_iter):
                     if isinstance(v, dict):
                         for kk, vv in v.items():
                             userDictInt[det._name][kk] = vv
-                            normdict[det._name][k][kk] = (
-                                vv * 0
-                            )  # may not work for arrays....
+                            normdict[det._name][k][kk] = vv * 0
                     else:
                         userDictInt[det._name][k] = v
-                        normdict[det._name][k] = v * 0  # may not work for arrays....
-                # print(userDictInt)
-                # For xtcpp, need to create shape dict from data
-                userDictInt_shape = {}
-                for key, value in userDictInt.items():
-                    if isinstance(value, dict):
-                        for subkey, subvalue in value.items():
-                            if isinstance(subvalue, np.ndarray):
-                                userDictInt_shape[f"{key}/{subkey}"] = list(subvalue.shape)
-                            else:
-                                userDictInt_shape[f"{key}/{subkey}"] = []
-                    elif isinstance(value, np.ndarray):
-                        userDictInt_shape[key] = list(value.shape)
-                    else:
-                        userDictInt_shape[key] = []
-                # Flatten nested dict structure for xtcpp
-                userDictInt_flat = {}
-                for key, value in userDictInt.items():
-                    if isinstance(value, dict):
-                        for subkey, subvalue in value.items():
-                            userDictInt_flat[f"{key}/{subkey}"] = subvalue
-                    else:
-                        userDictInt_flat[key] = value
-                small_data.event(userDictInt_flat, userDictInt_shape)
+                        normdict[det._name][k] = v * 0
+
+                packed_data, packed_shape = xtcpp_pack(userDictInt)
+                small_data.event(packed_data, packed_shape)
 
     # store event-based data
-    # if det_data is not None:
-    # DO WE STILL WANT THAT???
-    # #remove data fields from the save_def_dets list
-    # if 'veto' in save_def_dets:
-    #     for k in save_def_dets['veto']:
-    #         v = det_data.pop(k, None)
-    #     #for k,v in det_data.items():
-    #     #    if k not in save_def_dets['veto']:
-    #     #        save_det_data[k]=v
-    # if 'save' in save_def_dets:
-    #     save_det_data={}
-    #     for k,v in det_data.items():
-    #         if k in save_def_dets['save']:
-    #             save_det_data[k]=v
-    #     det_data = save_det_data
-    # #save what was selected to be saved.
-    # #print('SAVE ',det_data)
-
-    # For xtcpp, need to create shape dict from data and flatten nested structures
-    def create_shape_dict(data_dict):
-        """Create shape dictionary from data dictionary for xtcpp"""
-        shape_dict = {}
-        for key, value in data_dict.items():
-            if isinstance(value, dict):
-                for subkey, subvalue in value.items():
-                    if isinstance(subvalue, np.ndarray):
-                        shape_dict[f"{key}/{subkey}"] = list(subvalue.shape)
-                    elif isinstance(subvalue, (list, tuple)) and len(subvalue) > 0:
-                        if isinstance(subvalue[0], np.ndarray):
-                            shape_dict[f"{key}/{subkey}"] = list(subvalue[0].shape)
-                        else:
-                            shape_dict[f"{key}/{subkey}"] = [len(subvalue)]
-                    else:
-                        shape_dict[f"{key}/{subkey}"] = []
-            elif isinstance(value, np.ndarray):
-                shape_dict[key] = list(value.shape)
-            elif isinstance(value, (list, tuple)) and len(value) > 0:
-                if isinstance(value[0], np.ndarray):
-                    shape_dict[key] = list(value[0].shape)
-                else:
-                    shape_dict[key] = [len(value)]
-            else:
-                shape_dict[key] = []
-        return shape_dict
-    
-    def flatten_dict(data_dict):
-        """Flatten nested dictionary structure for xtcpp"""
-        flat_dict = {}
-        for key, value in data_dict.items():
-            if isinstance(value, dict):
-                for subkey, subvalue in value.items():
-                    flat_dict[f"{key}/{subkey}"] = subvalue
-            else:
-                flat_dict[key] = value
-        return flat_dict
-    
-    def convert_for_xtcpp(data):
-        """Convert data to formats compatible with xtcpp (masked arrays, etc.)
-        For save_summary, numpy arrays need to be converted to lists since
-        pybind11 can't automatically convert numpy arrays to std::any.
-        """
-        if isinstance(data, np.ma.MaskedArray):
-            # Convert masked array to regular numpy array, then to list
-            arr = np.asarray(data)
-            return arr.flatten().tolist()
-        elif isinstance(data, np.ndarray):
-            # Convert numpy array to list for save_summary compatibility
-            # xtcpp expects vectors (lists) that can be converted to std::any
-            return data.flatten().tolist()
-        elif isinstance(data, dict):
-            return {k: convert_for_xtcpp(v) for k, v in data.items()}
-        elif isinstance(data, (list, tuple)):
-            return [convert_for_xtcpp(item) for item in data]
-        else:
-            return data
-    
     if len(int_dets) == 0 or args.all_events:
-        det_data_flat = flatten_dict(det_data)
-        det_data_shape = create_shape_dict(det_data)
-        small_data.event(det_data_flat, det_data_shape)
+        packed_data, packed_shape = xtcpp_pack(det_data)
+        small_data.event(packed_data, packed_shape)
     else:
         scan_data = det_data.get("scan", {})
         timing_data = det_data.get("timing", {})
         data_for_smd = {"scan": scan_data, "timing": timing_data}
-        data_for_smd_flat = flatten_dict(data_for_smd)
-        data_for_smd_shape = create_shape_dict(data_for_smd)
-        small_data.event(data_for_smd_flat, data_for_smd_shape)
+        packed_data, packed_shape = xtcpp_pack(data_for_smd)
+        small_data.event(packed_data, packed_shape)
 
     # the ARP will pass run & exp via the environment, if I see that info, the post updates
     if (
@@ -922,163 +877,122 @@ for evt_num, evt in enumerate(event_iter):
                         }
                     ],
                 )
-            except:
+            except Exception:
                 print("ARP update post failed")
                 pass
         elif rank == 0:
             print("Processed evt %d" % evt_num)
 
 # For xtcpp, all ranks can process sums
-# Note: _xtcpp.SmallData doesn't have a sum() method like psana
-# We'll use the data directly from det.storeSum() and aggregate manually if needed
-if True:
-    sumDict = {"Sums": {}}
-    for det in dets:
-        for key in det.storeSum().keys():
-            try:
-                # For xtcpp, use the data directly (no small_data.sum() method)
-                # If MPI aggregation is needed, it would need to be done manually
-                sumData = det.storeSum()[key]
-                sumDict["Sums"]["%s_%s" % (det._name, key)] = sumData
-            except Exception as e:
-                print("Problem with data sum for %s and key %s: %s" % (det._name, key, str(e)))
-    # For xtcpp, save_summary needs flattened dict and shape dict
-    # Note: save_summary may not work if pyxtcpp doesn't have proper wrapper
-    # Wrap in try-except to allow code to continue if it fails
-    if len(sumDict["Sums"].keys()) > 0:
+sumDict = {"Sums": {}}
+for det in dets:
+    for key in det.storeSum().keys():
         try:
-            # Create shape dict BEFORE converting arrays to lists (need original shapes)
-            sumDict_shape = create_shape_dict(sumDict)
-            # Flatten dict structure
-            sumDict_flat = flatten_dict(sumDict)
-            # Convert numpy arrays to numpy arrays (event() wrapper expects numpy arrays)
-            # Try passing numpy arrays like event() does, not lists
-            sumDict_for_xtcpp = {}
-            for k, v in sumDict_flat.items():
-                if isinstance(v, (list, tuple)):
-                    # Convert list back to numpy array for xtcpp compatibility
-                    sumDict_for_xtcpp[k] = np.array(v, dtype=np.float32)
-                elif isinstance(v, np.ndarray):
-                    sumDict_for_xtcpp[k] = v.astype(np.float32) if v.dtype != np.float32 else v
-                else:
-                    # Scalar or other type - convert to numpy array
-                    sumDict_for_xtcpp[k] = np.array([v], dtype=np.float32)
-            small_data.save_summary(sumDict_for_xtcpp, sumDict_shape)
+            sumData = det.storeSum()[key]
+            sumDict["Sums"]["%s_%s" % (det._name, key)] = sumData
         except Exception as e:
-            logger.warning(f"Failed to save summary data with save_summary: {e}")
-            logger.warning("Summary data (Sums) will not be saved. This may be expected if save_summary is not fully supported.")
+            print(
+                "Problem with data sum for %s and key %s: %s"
+                % (det._name, key, str(e))
+            )
 
-    if rank == 0:
-        logger.info("Saving detector configuration to UserDataCfg")
-        userDataCfg = {}
-        for det in default_dets:
-            # Make a list of configs not to be saved as lists of strings don't work in ps-4.2.5
-            noConfigSave = ["scan", "damage"]
-            if det.name not in noConfigSave:
-                userDataCfg[det.name] = det.params_as_dict()
-        for det in dets:
-            try:
-                userDataCfg[det._name] = det.params_as_dict()
-            except:
-                userDataCfg[det.name] = det.params_as_dict()
-        for det in int_dets:
-            try:
-                userDataCfg[det._name] = det.params_as_dict()
-            except:
-                userDataCfg[det.name] = det.params_as_dict()
-        if EODet is not None:
-            EODetData = detOnceData(EODet, EODetData, EODetTS, args.noarch)
-            if EODetData["epicsOnce"] != {}:
-                userDataCfg[EODet.name] = EODet.params_as_dict()
-                Config = {"UserDataCfg": userDataCfg}
-                Config.update(EODetData)
-            else:
-                Config = {"UserDataCfg": userDataCfg}
-        else:
-            Config = {"UserDataCfg": userDataCfg}
-        # For xtcpp, save_summary needs flattened dict and shape dict
-        # Note: save_summary may not work if pyxtcpp doesn't have proper wrapper
-        # Wrap in try-except to allow code to continue if it fails
+# Save summary data, if any
+if len(sumDict["Sums"].keys()) > 0:
+    try:
+        packed_data, packed_shape = xtcpp_pack(sumDict)
+        small_data.save_summary(packed_data, packed_shape)
+    except Exception as e:
+        logger.warning(f"Failed to save summary data with save_summary: {e}")
+        logger.warning(
+            "Summary data (Sums) will not be saved. This may be expected if save_summary is not fully supported."
+        )
+
+# Save detector configuration (numeric only)
+if rank == 0:
+    logger.info("Saving detector configuration to UserDataCfg")
+    userDataCfg = {}
+    for det in default_dets:
+        noConfigSave = ["scan", "damage"]
+        if det.name not in noConfigSave:
+            userDataCfg[det.name] = det.params_as_dict()
+    for det in dets:
         try:
-            # Create shape dict BEFORE converting arrays to lists (need original shapes)
-            Config_shape = create_shape_dict(Config)
-            # Flatten dict structure
-            Config_flat = flatten_dict(Config)
-            # Convert to numpy arrays (event() wrapper expects numpy arrays)
-            # Try passing numpy arrays like event() does, not lists
-            Config_for_xtcpp = {}
-            for k, v in Config_flat.items():
-                if isinstance(v, (list, tuple)):
-                    # Convert list back to numpy array for xtcpp compatibility
-                    # Handle mixed types in config - convert to string arrays if needed
-                    try:
-                        Config_for_xtcpp[k] = np.array(v, dtype=np.float32)
-                    except (ValueError, TypeError):
-                        # If conversion fails (e.g., strings), skip this key
-                        logger.debug(f"Skipping config key {k} (non-numeric type)")
-                        continue
-                elif isinstance(v, np.ndarray):
-                    Config_for_xtcpp[k] = v.astype(np.float32) if v.dtype != np.float32 else v
-                elif isinstance(v, (int, float)):
-                    Config_for_xtcpp[k] = np.array([v], dtype=np.float32)
-                else:
-                    # Skip non-numeric types (strings, dicts, etc.)
-                    logger.debug(f"Skipping config key {k} (unsupported type: {type(v)})")
-                    continue
-            if len(Config_for_xtcpp) > 0:
-                small_data.save_summary(Config_for_xtcpp, Config_shape)  # this only works w/ 1 rank!
+            userDataCfg[det._name] = det.params_as_dict()
+        except Exception:
+            userDataCfg[det.name] = det.params_as_dict()
+    for det in int_dets:
+        try:
+            userDataCfg[det._name] = det.params_as_dict()
+        except Exception:
+            userDataCfg[det.name] = det.params_as_dict()
+
+    Config = {"UserDataCfg": userDataCfg}
+
+    # Filter out non-numeric values (xtcpp writer is numeric-friendly; strings via bytes also OK,
+    # but keep it simple and avoid huge dict blobs).
+    def _filter_numeric_tree(obj):
+        if isinstance(obj, dict):
+            out = {}
+            for k, v in obj.items():
+                vv = _filter_numeric_tree(v)
+                if vv is not None:
+                    out[k] = vv
+            return out if out else None
+        if isinstance(obj, (np.ndarray, np.ma.MaskedArray)):
+            if np.asarray(obj).dtype.kind in ("i", "u", "f", "b"):
+                return obj
+            return None
+        if _is_scalar_number(obj):
+            return float(obj)
+        # allow short strings as bytes; skip long/complex non-numeric by default
+        return None
+
+    Config_filtered = _filter_numeric_tree(Config)
+    if Config_filtered is not None:
+        try:
+            packed_data, packed_shape = xtcpp_pack(Config_filtered)
+            small_data.save_summary(packed_data, packed_shape)  # this only works w/ 1 rank!
         except Exception as e:
             logger.warning(f"Failed to save config data with save_summary: {e}")
-            logger.warning("Config data (UserDataCfg) will not be saved. This may be expected if save_summary is not fully supported.")
+            logger.warning(
+                "Config data (UserDataCfg) will not be saved. This may be expected if save_summary is not fully supported."
+            )
 
 # Finishing up:
-# Note: _xtcpp.SmallData doesn't have a done() method - cleanup happens automatically in destructor
 logger.info(f"Rank {rank}: Finishing up, about to delete small_data object")
-# small_data.done()  # Not available in _xtcpp.SmallData
 
 # Explicitly delete small_data to trigger destructor and ensure cleanup happens
-# This ensures any remaining batches are written before MPI barrier
-# The destructor will write remaining batches and close the file
 if rank == 0:
     logger.info("Rank 0: Deleting small_data object (will trigger destructor)")
-del small_data
+try:
+    del small_data
+except Exception:
+    pass
 if rank == 0:
     logger.info("Rank 0: small_data object deleted, destructor should have completed")
 
 # CRITICAL: The segfault occurs when C++ Detector destructors call MPI_Win_free.
 # We'll do minimal cleanup here and defer the rest until just before os._exit()
-# to minimize the window where garbage collection might trigger destructors.
 if rank == 0:
     logger.info("Rank 0: Event processing complete, proceeding to final steps")
 
-# Epics data from the archiver
-# For xtcpp, we need to determine which rank should handle archiver data
-# Typically rank 0 handles this
-h5_rank = None
-if rank == 0:
-    h5_rank = rank
-
+# Epics data from the archiver (skipped for xtcpp)
+h5_rank = 0
 if rank == h5_rank:
     logger.info(f"Getting epics data from Archiver (rank: {rank})")
-    # Note: xtcpp creates per-rank files (test_<rank>.h5), not the main h5_f_name file
-    # The epics archiver expects the main file, which doesn't exist with xtcpp
-    # Skip epics archiver for xtcpp to avoid hanging on non-existent file
-    logger.warning(f"Rank {rank}: Skipping epics archiver for xtcpp (per-rank files not compatible)")
-    # TODO: Implement epics archiver support for xtcpp by merging per-rank files first
+    logger.warning(
+        f"Rank {rank}: Skipping epics archiver for xtcpp (per-rank files not compatible)"
+    )
 
 if rank == 0:
     logger.info("Rank 0: About to call MPI barrier")
 MPI.COMM_WORLD.Barrier()
 if rank == 0:
     logger.info("Rank 0: Passed MPI barrier")
-# Note: xtcpp creates per-rank files (test_<rank>.h5), not the main h5_f_name file
-# The config writing code expects the main file, which doesn't exist with xtcpp
-# Skip config writing to main file for xtcpp to avoid hanging on non-existent file
 if rank == 0:
-    logger.warning("Rank 0: Skipping config writing to main file for xtcpp (per-rank files not compatible)")
-    # TODO: Implement config writing for xtcpp by writing to per-rank files or merging first
-    # For now, the config is already saved via small_data.save_summary() above
-
+    logger.warning(
+        "Rank 0: Skipping config writing to main file for xtcpp (per-rank files not compatible)"
+    )
 
 end_prod_time = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
 end_job = time.time()
@@ -1086,12 +1000,6 @@ prod_time = (end_job - start_job) / 60
 if rank == 0:
     print("########## JOB TIME: {:03f} minutes ###########".format(prod_time))
 logger.debug("rank {0} on {1} is finished".format(rank, hostname))
-
-
-# if args.sort:
-#    if ds.unique_user_rank():
-#        import subprocess
-#        cmd = ['timestamp_sort_h5', h5_f_name, h5_f_name]
 
 if rank == 0:
     if os.environ.get("ARP_JOB_ID", None) is not None:
@@ -1107,7 +1015,6 @@ if rank == 0:
     else:
         print(f"Last Event: {evt_num}")
 
-
 if args.postRuntable and rank == 0:
     print("Posting to the run tables.")
     locStr = ""
@@ -1118,7 +1025,7 @@ if args.postRuntable and rank == 0:
             "Prod%s_jobstart" % locStr: begin_job_time,
             "Prod%s_ncores" % locStr: size,
         }
-    except:
+    except Exception:
         runtable_data = {
             "Prod%s_end" % locStr: end_prod_time,
             "Prod%s_start" % locStr: begin_prod_time,
@@ -1154,30 +1061,15 @@ if args.postRuntable and rank == 0:
         )
         logger.debug(rp)
 
-# CRITICAL: Final cleanup before exit
-# The segfault occurs when C++ Detector destructors call MPI_Win_free during cleanup.
-# To minimize the risk, we do minimal cleanup and exit immediately with os._exit()
-# which prevents Python finalization from triggering destructors.
+# Final cleanup before exit
 if rank == 0:
     logger.info("Rank 0: Performing final cleanup before exit")
 
-# Clear detector lists to break reference cycles
-# Do this as late as possible to minimize the window where GC might run
 dets.clear()
 int_dets.clear()
 
-# Don't delete datasource - it may cache detectors internally
-# Don't call gc.collect() - it would force destructors to run
-# os._exit() will prevent Python finalization, so destructors won't run
-
 # Synchronize all ranks before exit to ensure consistent state
-MPI.COMM_WORLD.Barrier()
-try:
-    del small_data            # ALL ranks
-except Exception:
-    pass
 MPI.COMM_WORLD.Barrier()
 
 MPI.Finalize()
 os._exit(0)
-
