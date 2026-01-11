@@ -3,7 +3,7 @@ import numpy as np
 # These lists are needed, do not delete them
 # If no detector in a given category, leave the corresponding
 # list empty.
-detectors = ["epix100_0", "epix100_1", "alvium"]  # , 'qadc1']
+detectors = ["epix100_0", "epix100_1", "alvium", "jungfrau"]  # , 'qadc1']
 # detectors = []
 integrating_detectors = []
 
@@ -91,7 +91,7 @@ def get_azav(run):
         az_dict["phiBins"] = 11  # Number of phi bins for azint
         az_dict["qbin"] = 0.025  # Bin width in q for az int
         az_dict["userMask"] = None
-        # ret_dict["jungfrau"] = az_dict
+        ret_dict["jungfrau"] = az_dict
 
     return ret_dict
 
