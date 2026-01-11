@@ -3,7 +3,7 @@ import numpy as np
 # These lists are needed, do not delete them
 # If no detector in a given category, leave the corresponding
 # list empty.
-detectors = ["epix100_0", "epix100_1", "alvium", "jungfrau"]  # , 'qadc1']
+detectors = ["epix100_0", "epix100_1", "alvium"]  # , 'qadc1']
 # detectors = []
 integrating_detectors = []
 
