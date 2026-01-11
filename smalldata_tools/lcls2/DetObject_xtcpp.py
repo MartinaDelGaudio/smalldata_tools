@@ -21,12 +21,35 @@ def DetObject(srcName, ds, **kwargs):
     if rank == 0:
         logger.info(f"Getting the detector for: {srcName}")
     det = None
+    
+    # Try the exact name first
     try:
         det = ds.detector(srcName)
     except Exception as e:
-        if rank == 0:
-            logger.warning(f"failed to make detector for {srcName}: {e}")
-        return NullDetObject(name=srcName)
+        error_msg = str(e)
+        # If C++ says "Unknown detector type", try base name (e.g., "epix100_0" -> "epix100")
+        if "Unknown detector type" in error_msg:
+            # Extract base detector name by removing suffix (e.g., "_0", "_1")
+            base_name = srcName.rsplit('_', 1)[0] if '_' in srcName else srcName
+            if base_name != srcName:
+                if rank == 0:
+                    logger.info(f"Trying base detector name: {base_name} (original: {srcName})")
+                try:
+                    det = ds.detector(base_name)
+                    # If successful, update srcName to base_name for type detection
+                    srcName = base_name
+                except Exception as e2:
+                    if rank == 0:
+                        logger.warning(f"failed to make detector for {srcName} (tried {base_name}): {e2}")
+                    return NullDetObject(name=srcName)
+            else:
+                if rank == 0:
+                    logger.warning(f"failed to make detector for {srcName}: {e}")
+                return NullDetObject(name=srcName)
+        else:
+            if rank == 0:
+                logger.warning(f"failed to make detector for {srcName}: {e}")
+            return NullDetObject(name=srcName)
     
     # For xtcpp, we need to determine detector type differently
     # For now, we'll use the detector name to infer type
@@ -35,17 +58,34 @@ def DetObject(srcName, ds, **kwargs):
         detector_type = "epix100"
     elif "jungfrau" in srcName.lower():
         detector_type = "jungfrau"
-    elif "pv" in srcName.lower() or hasattr(det, 'get'):
+    elif "pv" in srcName.lower() or (det is not None and hasattr(det, 'get')):
         detector_type = "pv"
     else:
-        if rank == 0:
-            logger.warning(f"Unknown detector type for {srcName}, defaulting to NullDetObject")
-        return NullDetObject(name=srcName)
+        # Try to use det.raw.raw() as a fallback for generic cameras
+        if det is not None:
+            try:
+                # Test if this is a generic camera by trying to access raw data
+                # We'll create a GenericRawCameraObject if it has raw access
+                if hasattr(det, 'raw') and hasattr(det.raw, 'raw'):
+                    detector_type = "generic_cam"
+                else:
+                    if rank == 0:
+                        logger.warning(f"Unknown detector type for {srcName}, defaulting to NullDetObject")
+                    return NullDetObject(name=srcName)
+            except Exception:
+                if rank == 0:
+                    logger.warning(f"Unknown detector type for {srcName}, defaulting to NullDetObject")
+                return NullDetObject(name=srcName)
+        else:
+            if rank == 0:
+                logger.warning(f"Unknown detector type for {srcName}, defaulting to NullDetObject")
+            return NullDetObject(name=srcName)
     
     detector_classes = {
         "epix100": Epix100Object,
         "jungfrau": JungfrauObject,
         "pv": PVObject,
+        "generic_cam": GenericRawCameraObject,
     }
     
     cls = detector_classes.get(detector_type)
@@ -342,13 +382,16 @@ class Epix100Object(TiledCameraObject):
 
         self.bankMasks = []
         if self.common_mode == 47 and self.rms is not None:
-            for i in range(0, 16):
-                bmask = np.zeros_like(self.rms)
-                bmask[
-                    (i % 2) * 352 : (i % 2 + 1) * 352,
-                    768 / 8 * (i / 2) : 768 / 8 * (i / 2 + 1),
-                ] = 1
-                self.bankMasks.append(bmask.astype(bool))
+            cols_per_bank = 768 // 8
+            for i in range(16):
+                bmask = np.zeros_like(self.rms, dtype=bool)
+                r0 = (i % 2) * 352
+                r1 = (i % 2 + 1) * 352
+                cblock = i // 2
+                c0 = cols_per_bank * cblock
+                c1 = cols_per_bank * (cblock + 1)
+                bmask[r0:r1, c0:c1] = True
+                self.bankMasks.append(bmask)
 
     def getData(self, evt):
         super().getData(evt)
@@ -606,4 +649,41 @@ class PVObject(CameraObject):
                 self.evt.dat = self.det.raw.value(evt)
             except:
                 self.evt.dat = None
+
+
+class GenericRawCameraObject(CameraObject):
+    """
+    Generic camera object for detectors that have raw data access
+    but aren't explicitly supported (e.g., alvium, opal, rayonix, etc.)
+    """
+    def __init__(self, det, ds, **kwargs):
+        super(GenericRawCameraObject, self).__init__(det, ds, **kwargs)
+        self._common_mode_list = [0, -1, 30]  # none, raw, calib
+        self.common_mode = kwargs.get("common_mode", self._common_mode_list[0])
+        if self.common_mode is None:
+            self.common_mode = self._common_mode_list[0]
+
+    def getData(self, evt):
+        super(GenericRawCameraObject, self).getData(evt)
+        try:
+            if self.common_mode == 0 or self.common_mode == 30:
+                # Try calib first if available
+                try:
+                    self.evt.dat = self.det.raw.calib(evt)
+                except:
+                    # Fallback to raw
+                    self.evt.dat = self.det.raw.raw(evt)
+            elif self.common_mode == -1:
+                # Raw mode
+                self.evt.dat = self.det.raw.raw(evt)
+            else:
+                # Default to raw
+                self.evt.dat = self.det.raw.raw(evt)
+            
+            # Ensure it's a numpy array
+            if self.evt.dat is not None and not isinstance(self.evt.dat, np.ndarray):
+                self.evt.dat = np.asarray(self.evt.dat)
+        except Exception as e:
+            logger.debug(f"Error getting data for generic camera {self._name}: {e}")
+            self.evt.dat = None
 
