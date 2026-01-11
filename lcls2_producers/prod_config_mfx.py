@@ -91,7 +91,7 @@ def get_azav(run):
         az_dict["phiBins"] = 11  # Number of phi bins for azint
         az_dict["qbin"] = 0.025  # Bin width in q for az int
         az_dict["userMask"] = None
-        ret_dict["jungfrau"] = az_dict
+        # ret_dict["jungfrau"] = az_dict
 
     return ret_dict
 
