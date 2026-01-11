@@ -721,26 +721,28 @@ int_dets = []
 if not args.default:
     # Try to discover available detectors by attempting to access common detector names
     # This helps diagnose when config doesn't match actual detector names in data
+    # if rank == 0:
+    #     logger.info("Attempting to discover available detectors in data...")
+    #     common_detector_names = ["jungfrau", "epix100", "epix100_0", "epix100_1", "alvium", "opal", "rayonix"]
+    #     available_detectors = []
+    #     for detname in common_detector_names:
+    #         try:
+    #             test_det = ds.detector(detname)
+    #             if test_det is not None:
+    #                 available_detectors.append(detname)
+    #                 logger.info(f"  Found detector: {detname}")
+    #         except Exception:
+    #             pass  # Detector not available, skip
+    #     if available_detectors:
+    #         logger.info(f"Available detectors found: {available_detectors}")
+    #         if config.detectors and not any(d in available_detectors for d in config.detectors):
+    #             logger.warning(f"WARNING: Config detectors {config.detectors} don't match available detectors {available_detectors}")
+    #             logger.warning("Consider updating prod_config_mfx.py to include available detectors")
+    #     else:
+    #         logger.warning("Could not auto-detect any common detectors. Detector names may be different.")
     if rank == 0:
-        logger.info("Attempting to discover available detectors in data...")
-        common_detector_names = ["jungfrau", "epix100", "epix100_0", "epix100_1", "alvium", "opal", "rayonix"]
-        available_detectors = []
-        for detname in common_detector_names:
-            try:
-                test_det = ds.detector(detname)
-                if test_det is not None:
-                    available_detectors.append(detname)
-                    logger.info(f"  Found detector: {detname}")
-            except Exception:
-                pass  # Detector not available, skip
-        if available_detectors:
-            logger.info(f"Available detectors found: {available_detectors}")
-            if config.detectors and not any(d in available_detectors for d in config.detectors):
-                logger.warning(f"WARNING: Config detectors {config.detectors} don't match available detectors {available_detectors}")
-                logger.warning("Consider updating prod_config_mfx.py to include available detectors")
-        else:
-            logger.warning("Could not auto-detect any common detectors. Detector names may be different.")
-    
+        logger.info("Skipping detector discovery for xtcpp (can hang).")
+        
     dets = define_dets(int(args.run), config.detectors)
     if not skip_intg:
         int_dets = define_dets(int(args.run), integrating_detectors)
