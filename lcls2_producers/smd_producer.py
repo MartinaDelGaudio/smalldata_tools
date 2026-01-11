@@ -783,7 +783,7 @@ for evt_num, evt in enumerate(event_iter):
     userDict = {}
     for det in dets:
         try:
-            det.getData(evt_num)
+            det.getData(evt)
             det.processFuncs()
             userDict[det._name] = getUserData(det)
             try:
@@ -837,7 +837,7 @@ for evt_num, evt in enumerate(event_iter):
                 )
 
             if evt.EndOfBatch():
-                det.getData(evt_num)
+                det.getData(evt)
 
                 if det.evt.dat is None:
                     logger.info(
