@@ -113,7 +113,31 @@ class DetObjectClass(object):
             self._detid = getattr(det, '_detid', None)
         except:
             self._detid = None
-        self._name = kwargs.get("name", getattr(det, '_det_name', 'unknown'))
+        # Use srcName from kwargs if provided, otherwise try to get from det, otherwise use 'unknown'
+        # But prefer kwargs['name'] which should be set by the caller
+        self._name = kwargs.get("name", None)
+        if self._name is None:
+            # Try to get from detector object
+            try:
+                self._name = getattr(det, '_det_name', None)
+            except:
+                self._name = None
+        if self._name is None:
+            # Last resort: try to get from detector's source name if available
+            try:
+                if hasattr(det, 'source') and hasattr(det.source, '__str__'):
+                    src_str = str(det.source)
+                    # Extract detector name from source string (e.g., "DetInfo(Jungfrau1M.0:Jungfrau.0)" -> "jungfrau")
+                    if 'Jungfrau' in src_str:
+                        self._name = 'jungfrau'
+                    elif 'Epix' in src_str:
+                        self._name = 'epix100'
+                    else:
+                        self._name = 'unknown'
+                else:
+                    self._name = 'unknown'
+            except:
+                self._name = 'unknown'
         
         self.ds = ds  # Changed: store ds instead of run
         self._storeSum = {}
@@ -666,18 +690,30 @@ class JungfrauObject(TiledCameraObject):
         mbits = 0
         
         # For jungfrau with xtcpp: use det.raw.calib(evt) as per user's note
-        if self.common_mode == 0:
-            self.evt.dat = self.det.raw.calib(evt)
-        elif self.common_mode % 100 == 71:
-            self.evt.dat = self.det.raw.calib(evt)
-        elif self.common_mode % 100 == 72:
-            self.evt.dat = self.det.raw.calib(evt)
-        elif self.common_mode % 100 == 7:
-            self.evt.dat = self.det.raw.calib(evt)
-        elif self.common_mode == -1:
-            self.evt.dat = self.det.raw.raw(evt)
-        elif self.common_mode == 30:
-            self.evt.dat = self.det.raw.calib(evt)
+        try:
+            if self.common_mode == 0:
+                self.evt.dat = self.det.raw.calib(evt)
+            elif self.common_mode % 100 == 71:
+                self.evt.dat = self.det.raw.calib(evt)
+            elif self.common_mode % 100 == 72:
+                self.evt.dat = self.det.raw.calib(evt)
+            elif self.common_mode % 100 == 7:
+                self.evt.dat = self.det.raw.calib(evt)
+            elif self.common_mode == -1:
+                self.evt.dat = self.det.raw.raw(evt)
+            elif self.common_mode == 30:
+                self.evt.dat = self.det.raw.calib(evt)
+            else:
+                # Default to calib if common_mode doesn't match
+                self.evt.dat = self.det.raw.calib(evt)
+            
+            # Log if data is None (helps debug why no data is extracted)
+            if self.evt.dat is None and rank == 0 and evt < 3:
+                logger.warning(f"Jungfrau {self._name}: getData returned None for event {evt} (common_mode={self.common_mode})")
+        except Exception as e:
+            if rank == 0 and evt < 3:
+                logger.warning(f"Jungfrau {self._name}: Error in getData for event {evt}: {e}")
+            self.evt.dat = None
 
         # override gain if desired
         if (

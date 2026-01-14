@@ -192,7 +192,8 @@ def define_dets(run, det_list):
                 detname, ds, common_mode=common_mode, name=f"det_{detname}"
             )
         else:
-            det = DetObject(detname, ds, common_mode=common_mode)
+            # Pass name parameter to ensure detector name is set correctly
+            det = DetObject(detname, ds, common_mode=common_mode, name=detname)
         
         # Skip if detector creation failed (returns NullDetObject)
         if isinstance(det, NullDetObject):
