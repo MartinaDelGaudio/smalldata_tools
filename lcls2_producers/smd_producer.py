@@ -229,6 +229,43 @@ def define_dets(run, det_list):
         ######## Standard detectors ########
         ####################################
         if detname in azav_args:
+            # For xtcpp detectors, masks may be None. Ensure they're set before adding azimuthalBinning
+            # to avoid AttributeError when setFromDet tries to call .flatten() on None
+            if det.mask is None or det.cmask is None:
+                # Try to create default masks from detector geometry if available
+                if det.x is not None:
+                    try:
+                        mask_shape = det.x.shape
+                        if det.mask is None:
+                            # Create a mask of all True (no masking) as default
+                            det.mask = np.ones(mask_shape, dtype=bool)
+                        if det.cmask is None:
+                            # Create a cmask of all True (no masking) as default
+                            det.cmask = np.ones(mask_shape, dtype=bool)
+                    except Exception as e:
+                        if rank == 0:
+                            logger.warning(
+                                f"Could not create default masks for {detname} from geometry: {e}. "
+                                f"azimuthalBinning may fail if masks are required."
+                            )
+                elif hasattr(det, 'imgShape') and det.imgShape is not None:
+                    try:
+                        if det.mask is None:
+                            det.mask = np.ones(det.imgShape, dtype=bool)
+                        if det.cmask is None:
+                            det.cmask = np.ones(det.imgShape, dtype=bool)
+                    except Exception as e:
+                        if rank == 0:
+                            logger.warning(
+                                f"Could not create default masks for {detname} from imgShape: {e}. "
+                                f"azimuthalBinning may fail if masks are required."
+                            )
+                else:
+                    if rank == 0:
+                        logger.warning(
+                            f"Detector {detname} has no masks and no geometry information available. "
+                            f"azimuthalBinning may fail. Consider setting masks manually or providing geometry."
+                        )
             det.addFunc(azimuthalBinning(**azav_args[detname]))
 
         if detname in azav_pyfai_args:

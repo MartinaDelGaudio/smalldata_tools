@@ -177,8 +177,55 @@ class DetObjectClass(object):
         return parList
 
     def _getMasks(self):
-        self.mask = None
-        self.cmask = None
+        """
+        Retrieve masks from the detector, similar to lcls2/DetObject.py.
+        Tries to use det.raw._mask() if available, otherwise falls back to None.
+        """
+        try:
+            # Try to get masks using the same interface as lcls2/DetObject.py
+            if hasattr(self.det, 'raw') and hasattr(self.det.raw, '_mask'):
+                try:
+                    self.mask = self.det.raw._mask(calib=False, status=True, edges=True)
+                    self.cmask = self.det.raw._mask(calib=True, status=True, edges=True)
+                    if rank == 0 and self.mask is not None:
+                        logger.info(
+                            f"Retrieved masks for {self._name}: mask shape {self.mask.shape if hasattr(self.mask, 'shape') else 'scalar'}, "
+                            f"cmask shape {self.cmask.shape if hasattr(self.cmask, 'shape') else 'scalar'}"
+                        )
+                except Exception as e:
+                    if rank == 0:
+                        logger.debug(f"Could not retrieve masks using _mask() for {self._name}: {e}")
+                    self.mask = None
+                    self.cmask = None
+            else:
+                # If _mask method doesn't exist, try alternative methods
+                # Check if there's a mask attribute or method on the detector
+                if hasattr(self.det, 'mask'):
+                    try:
+                        # Try calling as a method if it's callable
+                        if callable(self.det.mask):
+                            self.mask = self.det.mask()
+                            self.cmask = self.det.mask(calib=True) if callable(self.det.mask) else None
+                        else:
+                            # It's an attribute
+                            self.mask = self.det.mask
+                            self.cmask = getattr(self.det, 'cmask', None)
+                    except Exception as e:
+                        if rank == 0:
+                            logger.debug(f"Could not retrieve masks using det.mask for {self._name}: {e}")
+                        self.mask = None
+                        self.cmask = None
+                else:
+                    # No mask support available
+                    if rank == 0:
+                        logger.debug(f"No mask support available for {self._name}, setting masks to None")
+                    self.mask = None
+                    self.cmask = None
+        except Exception as e:
+            if rank == 0:
+                logger.debug(f"Error in _getMasks() for {self._name}: {e}")
+            self.mask = None
+            self.cmask = None
 
     def _applyMask(self):
         try:
@@ -326,6 +373,8 @@ class CameraObject(DetObjectClass):
         
         self.local_gain = None
         self._getImgShape()
+        # Try to retrieve masks from detector (similar to lcls2/DetObject.py)
+        self._getMasks()
         self._gainSwitching = False
         self.x, self.y, self.z = None, None, None
 
