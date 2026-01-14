@@ -301,6 +301,10 @@ class DetObjectClass(object):
         if self.evt.dat is None:
             logger.debug("This event has no data to be processed for %s" % self._name)
             return
+        # Store raw data with _write_ prefix so getUserData can extract it
+        # This follows the same pattern as processed function results
+        self.evt.__dict__["_write_dat"] = self.evt.dat
+        # Process analysis functions
         for func in [
             self.__dict__[k]
             for k in self.__dict__
