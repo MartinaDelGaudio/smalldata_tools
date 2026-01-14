@@ -831,8 +831,21 @@ for evt_num, evt in enumerate(event_iter):
     for det in dets:
         try:
             det.getData(evt_num)
+            # Diagnostic logging for first few events
+            if rank == 0 and evt_num < 3:
+                if det.evt.dat is None:
+                    logger.warning(f"Rank {rank}: Detector {det._name} has no data (evt.dat is None) for event {evt_num}")
+                else:
+                    logger.info(f"Rank {rank}: Detector {det._name} has data shape {det.evt.dat.shape if hasattr(det.evt.dat, 'shape') else 'N/A'} for event {evt_num}")
+            
             det.processFuncs()
-            userDict[det._name] = getUserData(det)
+            userData = getUserData(det)
+            if rank == 0 and evt_num < 3:
+                if not userData:
+                    logger.warning(f"Rank {rank}: getUserData returned empty dict for {det._name} on event {evt_num}")
+                else:
+                    logger.info(f"Rank {rank}: getUserData returned {len(userData)} keys for {det._name} on event {evt_num}: {list(userData.keys())[:5]}")
+            userDict[det._name] = userData
             try:
                 envData = getUserEnvData(det)
                 if len(envData.keys()) > 0:
@@ -842,6 +855,9 @@ for evt_num, evt in enumerate(event_iter):
             det.processSums()
         except Exception as e:
             logger.warning(f"Failed analyzing det {det} on evt {evt_num}: {e}")
+            if rank == 0 and evt_num < 3:
+                import traceback
+                logger.warning(f"  Traceback: {traceback.format_exc()}")
             pass
 
     # Combine default data & user data into single dict.

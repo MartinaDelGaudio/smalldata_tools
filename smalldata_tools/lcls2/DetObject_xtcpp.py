@@ -707,12 +707,20 @@ class JungfrauObject(TiledCameraObject):
                 # Default to calib if common_mode doesn't match
                 self.evt.dat = self.det.raw.calib(evt)
             
-            # Log if data is None (helps debug why no data is extracted)
-            if self.evt.dat is None and rank == 0 and evt < 3:
-                logger.warning(f"Jungfrau {self._name}: getData returned None for event {evt} (common_mode={self.common_mode})")
+            # Log diagnostic information for first few events
+            if rank == 0 and evt < 3:
+                if self.evt.dat is None:
+                    logger.warning(f"Jungfrau {self._name}: getData returned None for event {evt} (common_mode={self.common_mode})")
+                    logger.warning(f"  Detector object: {self.det}, has raw: {hasattr(self.det, 'raw')}")
+                    if hasattr(self.det, 'raw'):
+                        logger.warning(f"  Raw object: {self.det.raw}, has calib: {hasattr(self.det.raw, 'calib')}")
+                else:
+                    logger.info(f"Jungfrau {self._name}: Successfully got data for event {evt}, shape: {self.evt.dat.shape if hasattr(self.evt.dat, 'shape') else 'N/A'}")
         except Exception as e:
             if rank == 0 and evt < 3:
                 logger.warning(f"Jungfrau {self._name}: Error in getData for event {evt}: {e}")
+                import traceback
+                logger.warning(f"  Traceback: {traceback.format_exc()}")
             self.evt.dat = None
 
         # override gain if desired
