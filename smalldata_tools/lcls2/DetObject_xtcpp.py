@@ -40,15 +40,23 @@ def DetObject(srcName, ds, **kwargs):
                     srcName = base_name
                 except Exception as e2:
                     if rank == 0:
-                        logger.warning(f"failed to make detector for {srcName} (tried {base_name}): {e2}")
+                        logger.warning(
+                            f"Detector '{srcName}' not found in data (tried '{base_name}'). "
+                            f"This detector may not be present in this run, or the detector name in the config "
+                            f"may not match the name in the data. Returning NullDetObject."
+                        )
                     return NullDetObject(name=srcName)
             else:
                 if rank == 0:
-                    logger.warning(f"failed to make detector for {srcName}: {e}")
+                    logger.warning(
+                        f"Detector '{srcName}' not found in data. "
+                        f"This detector may not be present in this run, or the detector name in the config "
+                        f"may not match the name in the data. Returning NullDetObject."
+                    )
                 return NullDetObject(name=srcName)
         else:
             if rank == 0:
-                logger.warning(f"failed to make detector for {srcName}: {e}")
+                logger.warning(f"Failed to create detector '{srcName}': {e}. Returning NullDetObject.")
             return NullDetObject(name=srcName)
     
     # For xtcpp, we need to determine detector type differently
