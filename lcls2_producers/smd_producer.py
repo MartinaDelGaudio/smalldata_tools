@@ -55,8 +55,10 @@ def _is_scalar_number(x):
     return isinstance(x, (int, float, np.integer, np.floating, bool))
 
 
-def _to_numpy_1d(x):
-    """Convert x into a 1D numpy array (numeric) suitable for the pybind writer."""
+def _to_numpy_array(x):
+    """Convert x into a numpy array suitable for the pybind writer.
+    OPTIMIZED: C++ code can handle multi-dimensional arrays directly, so we don't need to ravel().
+    We just ensure it's a contiguous numpy array."""
     if isinstance(x, np.ndarray):
         if x.dtype == object:
             # object arrays are dangerous for pybind/std::any; try best-effort cast
@@ -65,15 +67,13 @@ def _to_numpy_1d(x):
             except Exception:
                 # fall back to bytes of repr
                 x = np.array([repr(v) for v in x.ravel()], dtype="S")
-        # Optimize: use ravel() directly for contiguous arrays (it's a view, no copy)
-        # For non-contiguous, ascontiguousarray first to avoid multiple copies
-        if x.flags['C_CONTIGUOUS'] or x.flags['F_CONTIGUOUS']:
-            return x.ravel()
-        else:
-            return np.ascontiguousarray(x).ravel()
+        # C++ code handles multi-dimensional arrays, just ensure contiguous
+        if not (x.flags['C_CONTIGUOUS'] or x.flags['F_CONTIGUOUS']):
+            return np.ascontiguousarray(x)
+        return x
     if isinstance(x, np.ma.MaskedArray):
-        # For masked arrays, filled() already returns contiguous array
-        return np.ascontiguousarray(x.filled()).ravel()
+        # For masked arrays, convert to regular array
+        return np.ascontiguousarray(x.filled())
     if _is_scalar_number(x):
         return np.asarray([x], dtype=np.float32)
     if isinstance(x, (bytes, bytearray)):
@@ -86,8 +86,7 @@ def _to_numpy_1d(x):
         try:
             arr = np.asarray(x)
             if arr.dtype.kind in ("i", "u", "f", "b"):
-                # If already 1D, return as-is; otherwise ravel
-                return arr if arr.ndim <= 1 else arr.ravel()
+                return arr
         except Exception:
             pass
         # Fall back to string bytes
@@ -99,7 +98,8 @@ def _to_numpy_1d(x):
 def xtcpp_pack(data_dict, prefix=""):
     """
     Pack an arbitrarily nested dict into (flat_data, shape_dict) expected by xtcpp.
-    - flat_data: dict[str, np.ndarray] (1D arrays)
+    OPTIMIZED: Pass multi-dimensional arrays directly - C++ code handles flattening.
+    - flat_data: dict[str, np.ndarray] (can be multi-dimensional)
     - shape_dict: dict[str, list[int]] original shapes (empty list for scalars)
     Keys are joined with '/'.
     """
@@ -113,7 +113,8 @@ def xtcpp_pack(data_dict, prefix=""):
                 _walk(v, key)
             return
 
-        arr = _to_numpy_1d(obj)
+        # Convert to numpy array (but don't ravel - C++ handles that)
+        arr = _to_numpy_array(obj)
         flat[pfx] = arr
 
         # For shape: preserve original ndarray shape; scalars -> []
@@ -128,7 +129,7 @@ def xtcpp_pack(data_dict, prefix=""):
             try:
                 arr2 = np.asarray(obj)
                 if arr2.dtype.kind in ("i", "u", "f", "b"):
-                    shapes[pfx] = [len(arr2)]
+                    shapes[pfx] = list(arr2.shape) if arr2.ndim > 0 else []
                 else:
                     shapes[pfx] = [len(obj)]
             except Exception:
