@@ -65,9 +65,15 @@ def _to_numpy_1d(x):
             except Exception:
                 # fall back to bytes of repr
                 x = np.array([repr(v) for v in x.ravel()], dtype="S")
-        return np.asarray(x).ravel()
+        # Optimize: use ravel() directly for contiguous arrays (it's a view, no copy)
+        # For non-contiguous, ascontiguousarray first to avoid multiple copies
+        if x.flags['C_CONTIGUOUS'] or x.flags['F_CONTIGUOUS']:
+            return x.ravel()
+        else:
+            return np.ascontiguousarray(x).ravel()
     if isinstance(x, np.ma.MaskedArray):
-        return np.asarray(x.filled()).ravel()
+        # For masked arrays, filled() already returns contiguous array
+        return np.ascontiguousarray(x.filled()).ravel()
     if _is_scalar_number(x):
         return np.asarray([x], dtype=np.float32)
     if isinstance(x, (bytes, bytearray)):
@@ -80,7 +86,8 @@ def _to_numpy_1d(x):
         try:
             arr = np.asarray(x)
             if arr.dtype.kind in ("i", "u", "f", "b"):
-                return arr.ravel()
+                # If already 1D, return as-is; otherwise ravel
+                return arr if arr.ndim <= 1 else arr.ravel()
         except Exception:
             pass
         # Fall back to string bytes
