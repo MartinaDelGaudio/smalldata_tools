@@ -1013,15 +1013,15 @@ for det in dets:
             )
 
 # Save summary data, if any
+# Summary data = detector sums (totals, averages) computed across all events
 if len(sumDict["Sums"].keys()) > 0:
     try:
         packed_data, packed_shape = xtcpp_pack(sumDict)
         small_data.save_summary(packed_data, packed_shape)
     except Exception as e:
-        logger.warning(f"Failed to save summary data with save_summary: {e}")
-        logger.warning(
-            "Summary data (Sums) will not be saved. This may be expected if save_summary is not fully supported."
-        )
+        # Only log once from rank 0 - save_summary may not be fully supported with per-rank files
+        if rank == 0:
+            logger.debug(f"Summary data (Sums) not saved: {e}. This may be expected with xtcpp per-rank files.")
 
 # Save detector configuration (numeric only)
 if rank == 0:
@@ -1069,46 +1069,24 @@ if rank == 0:
             packed_data, packed_shape = xtcpp_pack(Config_filtered)
             small_data.save_summary(packed_data, packed_shape)  # this only works w/ 1 rank!
         except Exception as e:
-            logger.warning(f"Failed to save config data with save_summary: {e}")
-            logger.warning(
-                "Config data (UserDataCfg) will not be saved. This may be expected if save_summary is not fully supported."
-            )
+            # Only log once - save_summary may not be fully supported with per-rank files
+            logger.debug(f"Config data (UserDataCfg) not saved: {e}. This may be expected with xtcpp per-rank files.")
 
 # Finishing up:
-logger.info(f"Rank {rank}: Finishing up, about to delete small_data object")
-
 # Explicitly delete small_data to trigger destructor and ensure cleanup happens
-if rank == 0:
-    logger.info("Rank 0: Deleting small_data object (will trigger destructor)")
 try:
     del small_data
 except Exception:
     pass
-if rank == 0:
-    logger.info("Rank 0: small_data object deleted, destructor should have completed")
 
 # CRITICAL: The segfault occurs when C++ Detector destructors call MPI_Win_free.
 # We'll do minimal cleanup here and defer the rest until just before os._exit()
-if rank == 0:
-    logger.info("Rank 0: Event processing complete, proceeding to final steps")
 
-# Epics data from the archiver (skipped for xtcpp)
-h5_rank = 0
-if rank == h5_rank:
-    logger.info(f"Getting epics data from Archiver (rank: {rank})")
-    logger.warning(
-        f"Rank {rank}: Skipping epics archiver for xtcpp (per-rank files not compatible)"
-    )
+# Epics data from the archiver (skipped for xtcpp - per-rank files not compatible)
+# Skipping epics archiver for xtcpp
 
-if rank == 0:
-    logger.info("Rank 0: About to call MPI barrier")
 MPI.COMM_WORLD.Barrier()
-if rank == 0:
-    logger.info("Rank 0: Passed MPI barrier")
-if rank == 0:
-    logger.warning(
-        "Rank 0: Skipping config writing to main file for xtcpp (per-rank files not compatible)"
-    )
+# Skipping config writing to main file for xtcpp (per-rank files not compatible)
 
 end_prod_time = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
 end_job = time.time()
@@ -1178,8 +1156,7 @@ if args.postRuntable and rank == 0:
         logger.debug(rp)
 
 # Final cleanup before exit
-if rank == 0:
-    logger.info("Rank 0: Performing final cleanup before exit")
+# Final cleanup
 
 dets.clear()
 int_dets.clear()
