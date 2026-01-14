@@ -264,9 +264,16 @@ def define_dets(run, det_list):
                     if rank == 0:
                         logger.warning(
                             f"Detector {detname} has no masks and no geometry information available. "
-                            f"azimuthalBinning may fail. Consider setting masks manually or providing geometry."
+                            f"Skipping azimuthalBinning to avoid errors. Consider setting masks manually or providing geometry."
                         )
-            det.addFunc(azimuthalBinning(**azav_args[detname]))
+            # Only add azimuthalBinning if masks are now available (to avoid AttributeError in setFromDet)
+            if det.mask is not None and det.cmask is not None:
+                det.addFunc(azimuthalBinning(**azav_args[detname]))
+            else:
+                if rank == 0:
+                    logger.warning(
+                        f"Could not ensure masks for {detname}. Skipping azimuthalBinning."
+                    )
 
         if detname in azav_pyfai_args:
             det.addFunc(azav_pyfai(**azav_pyfai_args[detname]))
